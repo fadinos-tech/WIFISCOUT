@@ -275,7 +275,8 @@
                 android:layout_weight="1" android:text="License"
                 android:textColor="@color/text_primary" android:textSize="13sp" />
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="â€º" android:textColor="@color/text_secondary" android:textSize="18sp" />
+                android:text="SOON" android:textColor="@color/text_secondary" android:textSize="12sp"
+                android:textStyle="bold" />
         </LinearLayout>
 
     </LinearLayout>

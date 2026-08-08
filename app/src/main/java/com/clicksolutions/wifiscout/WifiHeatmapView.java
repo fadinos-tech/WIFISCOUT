@@ -56,6 +56,7 @@ public class WifiHeatmapView extends android.view.View {
     private final List<ScanPoint> points  = new ArrayList<>();
     private final List<MapMarker> markers = new ArrayList<>();
     private final List<Integer>   roamingIndices = new ArrayList<>();
+    private final List<String>    roamingLabels  = new ArrayList<>();  // new-AP tag per roam
 
     // Last drawn position — to skip duplicate points
     private float lastDrawnX = Float.NaN;
@@ -192,9 +193,12 @@ public class WifiHeatmapView extends android.view.View {
         applyMode(); invalidate();
     }
 
-    public void markRoaming() {
+    public void markRoaming() { markRoaming(null); }
+
+    public void markRoaming(String apLabel) {
         if (!points.isEmpty()) {
             roamingIndices.add(points.size() - 1);
+            roamingLabels.add(apLabel);
             if (roamStyle == RoamStyle.FLASH_RING) startPulse();
             invalidate();
         }
@@ -214,7 +218,7 @@ public class WifiHeatmapView extends android.view.View {
     public float getCurrentWorldY()     { return worldY; }
 
     public void clearTrail() {
-        points.clear(); markers.clear(); roamingIndices.clear();
+        points.clear(); markers.clear(); roamingIndices.clear(); roamingLabels.clear();
         clearHeatField(); clearSuggestion();
         worldX = WORLD_ORIGIN; worldY = WORLD_ORIGIN;
         started = false; scanning = false;
@@ -469,7 +473,8 @@ public class WifiHeatmapView extends android.view.View {
     }
 
     private void drawRoamingMarkers(Canvas canvas) {
-        for (int ri : roamingIndices) {
+        for (int i = 0; i < roamingIndices.size(); i++) {
+            int ri = roamingIndices.get(i);
             if (ri>=points.size()) continue;
             ScanPoint p=points.get(ri);
             float sx=toSX(p.x), sy=toSY(p.y);
@@ -479,7 +484,23 @@ public class WifiHeatmapView extends android.view.View {
                 case BANNER:      drawBanner(canvas,sx,sy);     break;
                 case COLOR_SPLIT: drawColorSplitMark(canvas,sx,sy); break;
             }
+            String label = i < roamingLabels.size() ? roamingLabels.get(i) : null;
+            if (label != null) drawRoamLabel(canvas, sx, sy, label);
         }
+    }
+
+    /** Small "⇄ …tag" chip under a roam marker — identifies which AP took over. */
+    private void drawRoamLabel(Canvas canvas, float sx, float sy, String label) {
+        String text = "⇄ " + label;
+        Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
+        lbl.setTextSize(11f); lbl.setTextAlign(Paint.Align.CENTER);
+        lbl.setTypeface(Typeface.DEFAULT_BOLD);
+        float tw = lbl.measureText(text), ly = sy + 34;
+        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bg.setColor(Color.argb(215, 20, 30, 50));
+        canvas.drawRoundRect(new RectF(sx-tw/2-6, ly, sx+tw/2+6, ly+18), 5, 5, bg);
+        lbl.setColor(Color.argb(235, 255, 220, 130));
+        canvas.drawText(text, sx, ly + 13, lbl);
     }
 
     private void drawFlashRing(Canvas canvas, float sx, float sy) {

@@ -58,7 +58,14 @@ public class WifiScanService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        startForeground(NOTIFICATION_ID, buildNotification("סורק WiFi..."));
+        try {
+            // Android 14+ throws SecurityException for a location-type foreground
+            // service if location permission was revoked meanwhile
+            startForeground(NOTIFICATION_ID, buildNotification("סורק WiFi..."));
+        } catch (Exception e) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         startScanning();
         return START_STICKY;
     }
@@ -88,7 +95,10 @@ public class WifiScanService extends Service {
 
     private void doScan() {
         if (wifiManager == null) return;
-        WifiInfo info = wifiManager.getConnectionInfo();
+        WifiInfo info;
+        try {
+            info = wifiManager.getConnectionInfo();
+        } catch (SecurityException e) { return; }  // location permission revoked mid-scan
         if (info == null) return;
         int rssi  = info.getRssi();
         int level = WifiManager.calculateSignalLevel(rssi, 100);

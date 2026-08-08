@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 15 (targetSdk 35) forces edge-to-edge; the layout uses its own
+         solid header/footer bars, so opt out to keep the status bar colored. -->
+    <style name="Theme.WifiScout" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/start_green</item>
+        <item name="colorPrimaryVariant">@color/start_green</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorSecondary">@color/signal_excellent</item>
+        <item name="colorOnSecondary">@android:color/black</item>
+        <item name="android:statusBarColor">@color/header_bg</item>
+        <item name="android:navigationBarColor">@color/header_bg</item>
+        <item name="android:windowBackground">@color/bg_dark</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

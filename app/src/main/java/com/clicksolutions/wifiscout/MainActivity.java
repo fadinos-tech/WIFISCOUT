@@ -50,6 +50,7 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int  PERM_LOCATION     = 100;
     private static final int  PERM_ACTIVITY     = 101;
+    private static final int  PERM_NOTIF        = 102;
     private static final int  NO_MOVE_WARN      = 3;
     private static final int  NO_MOVE_STOP      = 10;
     private static final int  DEFAULT_THRESHOLD = 20;
@@ -74,6 +75,7 @@ public class MainActivity extends AppCompatActivity {
     private String          currentBssid  = "";
     private String          lastBssid     = "";
     private int             redThreshold  = DEFAULT_THRESHOLD;
+    private long            stickyStatusUntil = 0;  // keep roaming message visible
 
     private final StringBuilder scanLog = new StringBuilder();
 
@@ -109,9 +111,9 @@ public class MainActivity extends AppCompatActivity {
     @Override protected void onDestroy() {
         super.onDestroy();
         stopScanning(true);
-        Intent si = new Intent(this, WifiScanService.class);
-        si.setAction(WifiScanService.ACTION_STOP);
-        startService(si);
+        // stopService is always allowed; startService from a destroyed activity
+        // throws IllegalStateException when the app is already in the background
+        stopService(new Intent(this, WifiScanService.class));
     }
 
     @Override protected void onStart() {
@@ -123,7 +125,11 @@ public class MainActivity extends AppCompatActivity {
     @Override protected void onStop() {
         super.onStop();
         if (isScanning) stopScanning(true);
-        if (serviceBound) { unbindService(serviceConnection); serviceBound = false; }
+        if (serviceBound) {
+            if (scanService != null) scanService.setScanCallback(null);
+            unbindService(serviceConnection);
+            serviceBound = false;
+        }
     }
 
     @Override public void onBackPressed() {
@@ -307,6 +313,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showStopReport() {
+        if (isFinishing() || isDestroyed()) return; // dialog on a dead activity crashes
         View view = LayoutInflater.from(this).inflate(R.layout.dialog_stop_report, null);
         List<ScanPoint> pts = heatmapView.getPoints();
         int total=pts.size(), green=0, yellow=0, red=0;
@@ -342,7 +349,7 @@ public class MainActivity extends AppCompatActivity {
         if (!lastBssid.isEmpty() && !bssid.equals(lastBssid)
                 && !bssid.equals("N/A") && !bssid.equals("<none>")) {
             log("ROAMING  old=" + lastBssid + "  new=" + bssid);
-            heatmapView.markRoaming();
+            onRoamingDetected(lastBssid, bssid);
             lastBssid = bssid;
         }
         String name = ssid.isEmpty()||ssid.equals("<unknown ssid>") ? "Not connected" : ssid;
@@ -356,6 +363,24 @@ public class MainActivity extends AppCompatActivity {
                     +"  point#="+heatmapView.getPointCount()+"  step#="+stepCount);
         }
         updatePointCount();
+    }
+
+    /** Real-time indication when the phone roams to another AP (extender) on the same SSID. */
+    private void onRoamingDetected(String oldBssid, String newBssid) {
+        String apTag = newBssid.length() >= 5
+                ? newBssid.substring(newBssid.length() - 5) : newBssid;
+        heatmapView.markRoaming(apTag);
+        // Vibrate so the user feels the hand-off while walking
+        try {
+            android.os.Vibrator vib = (android.os.Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (vib != null && vib.hasVibrator())
+                vib.vibrate(android.os.VibrationEffect.createOneShot(250,
+                        android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+        } catch (Exception ignored) {}
+        // Sticky banner for 4 seconds (step updates won't wipe it)
+        stickyStatusUntil = System.currentTimeMillis() + 4000;
+        setStatus("⇄ Roaming: moved to AP …" + apTag);
+        Toast.makeText(this, "Roaming detected → " + apTag, Toast.LENGTH_SHORT).show();
     }
 
     private void checkNoMove() {
@@ -415,6 +440,7 @@ public class MainActivity extends AppCompatActivity {
                 cv.put(MediaStore.Images.Media.MIME_TYPE,"image/png");
                 cv.put(MediaStore.Images.Media.RELATIVE_PATH,Environment.DIRECTORY_PICTURES+"/WiFiScout");
                 Uri uri=getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,cv);
+                if (uri==null) { Toast.makeText(this,"Save failed: storage unavailable.",Toast.LENGTH_SHORT).show(); return; }
                 out=getContentResolver().openOutputStream(uri);
             } else {
                 File dir=new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),"WiFiScout");
@@ -468,6 +494,7 @@ public class MainActivity extends AppCompatActivity {
                 cv.put(MediaStore.Downloads.MIME_TYPE,"text/csv");
                 cv.put(MediaStore.Downloads.RELATIVE_PATH,Environment.DIRECTORY_DOWNLOADS+"/WiFiScout");
                 Uri uri=getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI,cv);
+                if (uri==null) { Toast.makeText(this,"CSV export failed: storage unavailable.",Toast.LENGTH_SHORT).show(); return; }
                 OutputStream out=getContentResolver().openOutputStream(uri);
                 out.write(csv.toString().getBytes("UTF-8")); out.close();
             } else {
@@ -507,7 +534,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setStatus(String msg){
-        if(msg.isEmpty()) tvStatus.setVisibility(View.GONE);
+        if(msg.isEmpty()){
+            if(System.currentTimeMillis() < stickyStatusUntil) return; // keep roaming banner
+            tvStatus.setVisibility(View.GONE);
+        }
         else{tvStatus.setText(msg);tvStatus.setVisibility(View.VISIBLE);}
     }
     private void updatePointCount(){
@@ -540,11 +570,21 @@ public class MainActivity extends AppCompatActivity {
     private void requestActivityPermission(){
         ActivityCompat.requestPermissions(this,new String[]{Manifest.permission.ACTIVITY_RECOGNITION},PERM_ACTIVITY);
     }
+    /** Android 13+: without this the foreground-service notification is invisible. */
+    private void requestNotificationPermissionIfNeeded(){
+        if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.TIRAMISU
+                && ContextCompat.checkSelfPermission(this,Manifest.permission.POST_NOTIFICATIONS)
+                   !=PackageManager.PERMISSION_GRANTED)
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},PERM_NOTIF);
+    }
     @Override public void onRequestPermissionsResult(int req,@NonNull String[] p,@NonNull int[] r){
         super.onRequestPermissionsResult(req,p,r);
         boolean ok=r.length>0&&r[0]==PackageManager.PERMISSION_GRANTED;
         if(req==PERM_LOCATION&&ok) requestActivityPermission();
-        if(req==PERM_ACTIVITY&&!ok)
-            Toast.makeText(this,"Physical Activity permission required.",Toast.LENGTH_LONG).show();
+        if(req==PERM_ACTIVITY){
+            if(!ok) Toast.makeText(this,"Physical Activity permission required.",Toast.LENGTH_LONG).show();
+            requestNotificationPermissionIfNeeded(); // optional — scanning works either way
+        }
     }
 }

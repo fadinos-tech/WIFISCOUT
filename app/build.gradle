@@ -4,12 +4,12 @@ plugins {
 
 android {
     namespace 'com.clicksolutions.wifiscout'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.clicksolutions.wifiscout"
         minSdk 26
-        targetSdk 34
+        targetSdk 35
         // Version is defined once in gradle.properties (APP_VERSION_NAME / APP_VERSION_CODE)
         versionCode APP_VERSION_CODE.toInteger()
         versionName APP_VERSION_NAME
