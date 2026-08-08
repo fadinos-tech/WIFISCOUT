@@ -40,10 +40,11 @@ public class WifiHeatmapView extends android.view.View {
     // ── Heat field (IDW grid) ────────────────────────────────────
     private static final float CELL        = 12f;                       // world units per cell
     private static final int   GRID_N      = (int) (WORLD_SIZE / CELL); // 250 x 250
-    private static final float HEAT_RADIUS = 110f;   // influence radius of one sample (~2 steps)
+    private static final float HEAT_RADIUS = 85f;    // influence radius of one sample (~1.5 steps)
     private static final float W_MIN       = 0.02f;  // below this weight the cell is "not covered"
     private static final float W_FULL      = 0.35f;  // weight at which the cell reaches full opacity
-    private static final int   HEAT_ALPHA  = 170;    // max opacity of the heat layer
+    private static final int   HEAT_ALPHA  = 160;    // max opacity of the heat layer
+    private static final float MAX_FIT_ZOOM = 1.15f; // don't zoom a single point to full screen
 
     private static final float FIT_PAD     = 140f;   // world padding for auto-fit
     private static final float MIN_MOVE_PX = 15f;
@@ -249,6 +250,8 @@ public class WifiHeatmapView extends android.view.View {
     public void addMarker(MapMarker m) { markers.add(m); invalidate(); }
     public List<MapMarker> getMarkers() { return new ArrayList<>(markers); }
     public List<ScanPoint> getPoints()  { return new ArrayList<>(points);  }
+    public List<Integer>   getRoamingIndices() { return new ArrayList<>(roamingIndices); }
+    public List<String>    getRoamingLabels()  { return new ArrayList<>(roamingLabels);  }
     public int   getPointCount()        { return points.size(); }
     public float getWorldOriginX()      { return WORLD_ORIGIN; }
     public float getWorldOriginY()      { return WORLD_ORIGIN; }
@@ -486,7 +489,7 @@ public class WifiHeatmapView extends android.view.View {
         }
         float rX=maxX-minX+FIT_PAD*2, rY=maxY-minY+FIT_PAD*2;
         float sX=(rX>10)?getWidth()/rX:1f, sY=(rY>10)?getHeight()/rY:1f;
-        zoom=Math.max(0.05f,Math.min(sX,sY));
+        zoom=Math.max(0.05f,Math.min(Math.min(sX,sY),MAX_FIT_ZOOM));
         panX=getWidth()/2f-((minX+maxX)/2f)*zoom;
         panY=getHeight()/2f-((minY+maxY)/2f)*zoom;
     }

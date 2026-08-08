@@ -55,6 +55,7 @@ public class WifiScanService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -91,6 +92,13 @@ public class WifiScanService extends Service {
     public void stopScanning() {
         scanning = false;
         if (scanRunnable != null) handler.removeCallbacks(scanRunnable);
+    }
+
+    /** Fully stop: scanning + foreground notification + service. Safe via binder from any state. */
+    public void shutdown() {
+        stopScanning();
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        stopSelf();
     }
 
     private void doScan() {

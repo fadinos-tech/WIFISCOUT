@@ -76,6 +76,9 @@ public class MainActivity extends AppCompatActivity {
     private String          lastBssid     = "";
     private int             redThreshold  = DEFAULT_THRESHOLD;
     private long            stickyStatusUntil = 0;  // keep roaming message visible
+    private boolean         noMoveDialogShowing = false;
+    private AlertDialog     noMoveDialog;
+    private android.widget.ProgressBar scanSpinner;
 
     private final StringBuilder scanLog = new StringBuilder();
 
@@ -125,6 +128,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onStop() {
         super.onStop();
+        if (noMoveDialog != null && noMoveDialog.isShowing()) noMoveDialog.dismiss();
+        noMoveDialogShowing = false;
         if (isScanning) stopScanning(true);
         if (serviceBound) {
             if (scanService != null) scanService.setScanCallback(null);
@@ -172,6 +177,7 @@ public class MainActivity extends AppCompatActivity {
         tvVersion        = findViewById(R.id.tvVersion);
         tvDrawerVersion  = findViewById(R.id.tvDrawerVersion);
         tvThresholdValue = findViewById(R.id.tvThresholdValue);
+        scanSpinner      = findViewById(R.id.scanSpinner);
         seekThreshold    = findViewById(R.id.seekThreshold);
         rgMapMode        = findViewById(R.id.rgMapMode);
         rgRoamStyle      = findViewById(R.id.rgRoamStyle);
@@ -283,6 +289,8 @@ public class MainActivity extends AppCompatActivity {
         btnStartStop.setText("STOP");
         btnStartStop.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.stop_red));
         btnSave.setEnabled(false); btnShare.setEnabled(false); btnMark.setEnabled(true);
+        if (scanSpinner != null) scanSpinner.setVisibility(View.VISIBLE);
+        noMoveDialogShowing = false;
         heatmapView.clearTrail(); updatePointCount(); setStatus("");
         heatmapView.setScanning(true);
         Intent si = new Intent(this, WifiScanService.class);
@@ -303,13 +311,16 @@ public class MainActivity extends AppCompatActivity {
         btnStartStop.setText("START");
         btnStartStop.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.start_green));
         btnMark.setEnabled(false);
+        if (scanSpinner != null) scanSpinner.setVisibility(View.GONE);
         heatmapView.setScanning(false);
         stepNavigator.stop();
-        if (serviceBound && scanService != null) scanService.stopScanning();
-        if (heatmapView.getPointCount() > 0) {
-            btnSave.setEnabled(true); btnShare.setEnabled(true);
-        }
+        // Shut the service down completely so its notification disappears immediately
+        if (serviceBound && scanService != null) scanService.shutdown();
         log("Scan stopped  total=" + heatmapView.getPointCount() + "  steps=" + stepCount);
+        if (heatmapView.getPointCount() > 0) {
+            btnShare.setEnabled(true);
+            saveToGallery();  // auto-save — no Save button anymore
+        }
         if (!silent) showStopReport();
     }
 
@@ -386,13 +397,34 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void checkNoMove() {
+        if (noMoveDialogShowing) { lastStepAtScan = stepCount; return; }
         if (stepCount == lastStepAtScan) {
             noMoveCount++;
-            if (noMoveCount >= NO_MOVE_STOP) { setStatus(""); stopScanning(false); return; }
+            if (noMoveCount >= NO_MOVE_STOP) { showNoMoveDialog(); return; }
             if (noMoveCount >= NO_MOVE_WARN)
                 setStatus("No movement detected — keep walking! (" + (NO_MOVE_STOP-noMoveCount) + ")");
         } else { noMoveCount = 0; setStatus(""); }
         lastStepAtScan = stepCount;
+    }
+
+    /** Instead of auto-stopping: ask. Obstacles at home can take a few seconds to pass. */
+    private void showNoMoveDialog() {
+        if (isFinishing() || isDestroyed()) return;
+        noMoveDialogShowing = true;
+        setStatus("Scan paused — waiting for your answer");
+        noMoveDialog = new AlertDialog.Builder(this)
+                .setTitle("No movement detected")
+                .setMessage("No steps for a while. Keep scanning or stop and save the map?")
+                .setCancelable(false)
+                .setPositiveButton("Keep scanning", (d, w) -> {
+                    noMoveDialogShowing = false;
+                    noMoveCount = 0; setStatus("");
+                })
+                .setNegativeButton("Stop & save", (d, w) -> {
+                    noMoveDialogShowing = false;
+                    stopScanning(false);
+                })
+                .show();
     }
 
     // ── Mark Location ─────────────────────────────────────────────
@@ -479,13 +511,20 @@ public class MainActivity extends AppCompatActivity {
     private void exportCsv() {
         List<ScanPoint> pts = heatmapView.getPoints();
         if (pts.isEmpty()) { Toast.makeText(this,"No data to export.",Toast.LENGTH_SHORT).show(); return; }
-        StringBuilder csv=new StringBuilder("index,x,y,rssi,quality,ssid\n");
+        // roam events by point index → tag of the AP that took over
+        List<Integer> roamIdx = heatmapView.getRoamingIndices();
+        List<String>  roamLbl = heatmapView.getRoamingLabels();
+        StringBuilder csv=new StringBuilder("index,x,y,rssi,quality,ssid,roamed_to_ap\n");
         for(int i=0;i<pts.size();i++){
             ScanPoint p=pts.get(i);
+            String roam="";
+            for(int r=0;r<roamIdx.size();r++)
+                if(roamIdx.get(r)==i){ roam=roamLbl.get(r)!=null?roamLbl.get(r):"roam"; break; }
             csv.append(i+1).append(",").append(p.x).append(",").append(p.y)
                     .append(",").append(p.rssi).append(",")
                     .append(qualityLabel(p.signalLevel)).append(",")
-                    .append(p.ssid).append("\n");
+                    .append(p.ssid).append(",")
+                    .append(roam).append("\n");
         }
         SimpleDateFormat sdf=new SimpleDateFormat("yyyyMMdd_HHmmss",Locale.getDefault());
         String fn="WifiScout_"+sdf.format(new Date())+".csv";
@@ -522,6 +561,17 @@ public class MainActivity extends AppCompatActivity {
         List<ScanPoint> pts=heatmapView.getPoints();
         int total=pts.size(),green=0,yellow=0,red=0;
         for(ScanPoint p:pts){if(p.rssi>=-60)green++;else if(p.rssi>=-70)yellow++;else red++;}
+        // dedicated roaming section — hand-offs between router/extenders
+        List<Integer> roamIdx = heatmapView.getRoamingIndices();
+        List<String>  roamLbl = heatmapView.getRoamingLabels();
+        StringBuilder roams = new StringBuilder();
+        roams.append("Roaming events: ").append(roamIdx.size()).append("\n");
+        for (int r = 0; r < roamIdx.size(); r++) {
+            String tag = (r < roamLbl.size() && roamLbl.get(r) != null) ? roamLbl.get(r) : "?";
+            roams.append("  #").append(r+1)
+                 .append("  at point ").append(roamIdx.get(r)+1)
+                 .append("  -> AP ...").append(tag).append("\n");
+        }
         return "WiFi Scout Scan Report\n======================\n"
                 +"Date:    "+sdf.format(new Date())+"\n"
                 +"Network: "+currentSsid+"\n"
@@ -531,6 +581,7 @@ public class MainActivity extends AppCompatActivity {
                 +"App:     WiFi Scout v"+BuildConfig.VERSION_NAME+"\n"
                 +"Points:  "+total+"  Good:"+green+"  Fair:"+yellow+"  Weak:"+red+"\n"
                 +"Steps:   "+stepCount+"\n"
+                +"\n--- Roaming ---\n"+roams
                 +"\n--- Scan Log ---\n"+scanLog
                 +"\nGenerated by WiFi Scout - Click Solutions Pro";
     }

@@ -35,6 +35,10 @@ public class StepNavigator implements SensorEventListener {
     // Low-pass לכיוון
     private static final float ALPHA_AZIMUTH = 0.08f;
 
+    // נעילת כיוון: סטייה קטנה מהצעד הקודם = ממשיכים ישר.
+    // מבטל "קו עקום" בהליכה ישרה שנגרם מריצוד המצפן בתוך הבית.
+    private static final float HEADING_LOCK_RAD = (float) Math.toRadians(20);
+
     private final SensorManager    sensorManager;
     private final PositionCallback callback;
     private final int              screenRotation;
@@ -42,6 +46,7 @@ public class StepNavigator implements SensorEventListener {
     private float   posX, posY;
     private float   azimuthRad   = 0f;
     private float   smoothAzimuth = 0f;
+    private float   lastStepAzimuth = Float.NaN;
     private boolean firstAzimuth  = true;
     private boolean running        = false;
     private String  sensorSource   = "none";
@@ -64,6 +69,7 @@ public class StepNavigator implements SensorEventListener {
         posY          = startY;
         running       = false;
         firstAzimuth  = true;
+        lastStepAzimuth = Float.NaN;
         wasAboveThresh = false;
         lastStepTime  = 0;
         gravX = 0; gravY = 0; gravZ = GRAVITY;
@@ -201,8 +207,17 @@ public class StepNavigator implements SensorEventListener {
     }
 
     private void onStep(String source) {
-        posX += STEP_SIZE_PX * (float) Math.sin(azimuthRad);
-        posY -= STEP_SIZE_PX * (float) Math.cos(azimuthRad);
+        float az = azimuthRad;
+        if (!Float.isNaN(lastStepAzimuth)) {
+            float diff = az - lastStepAzimuth;
+            if (diff >  Math.PI) diff -= 2 * Math.PI;
+            if (diff < -Math.PI) diff += 2 * Math.PI;
+            // small wobble → walk straight; real turn → follow it
+            if (Math.abs(diff) < HEADING_LOCK_RAD) az = lastStepAzimuth;
+        }
+        lastStepAzimuth = az;
+        posX += STEP_SIZE_PX * (float) Math.sin(az);
+        posY -= STEP_SIZE_PX * (float) Math.cos(az);
         Log.d(TAG, source + " Step X=" + (int)posX + " Y=" + (int)posY
                 + " az=" + getAzimuthDeg() + "°");
         if (callback != null) callback.onPositionUpdate(posX, posY);
