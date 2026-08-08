@@ -80,7 +80,23 @@ public class MainActivity extends AppCompatActivity {
     private long            stickyStatusUntil = 0;  // keep roaming message visible
     private boolean         noMoveDialogShowing = false;
     private AlertDialog     noMoveDialog;
-    private android.widget.ProgressBar scanSpinner;
+
+    // Typewriter "SCANNING..." indicator
+    private TextView tvScanning;
+    private final android.os.Handler scanAnimHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private static final String[] SCAN_FRAMES = {
+            "S", "SC", "SCA", "SCAN", "SCANN", "SCANNI", "SCANNIN", "SCANNING",
+            "SCANNING.", "SCANNING..", "SCANNING...", "SCANNING...", ""
+    };
+    private int scanFrame = 0;
+    private final Runnable scanAnimRunnable = new Runnable() {
+        @Override public void run() {
+            if (!isScanning || tvScanning == null) return;
+            tvScanning.setText(SCAN_FRAMES[scanFrame]);
+            scanFrame = (scanFrame + 1) % SCAN_FRAMES.length;
+            scanAnimHandler.postDelayed(this, 280);
+        }
+    };
 
     // Every distinct physical AP unit seen this scan, in order: index 0 = "AP 1" (router).
     // Keyed by the first 5 MAC octets so both radios (2.4/5 GHz) of one unit share a name.
@@ -201,7 +217,7 @@ public class MainActivity extends AppCompatActivity {
         tvVersion        = findViewById(R.id.tvVersion);
         tvDrawerVersion  = findViewById(R.id.tvDrawerVersion);
         tvThresholdValue = findViewById(R.id.tvThresholdValue);
-        scanSpinner      = findViewById(R.id.scanSpinner);
+        tvScanning       = findViewById(R.id.tvScanning);
         seekThreshold    = findViewById(R.id.seekThreshold);
         rgMapMode        = findViewById(R.id.rgMapMode);
         rgRoamStyle      = findViewById(R.id.rgRoamStyle);
@@ -338,7 +354,12 @@ public class MainActivity extends AppCompatActivity {
         btnStartStop.setText("STOP");
         btnStartStop.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.stop_red));
         btnSave.setEnabled(false); btnShare.setEnabled(false); btnMark.setEnabled(true);
-        if (scanSpinner != null) scanSpinner.setVisibility(View.VISIBLE);
+        if (tvScanning != null) {
+            tvScanning.setVisibility(View.VISIBLE);
+            scanFrame = 0;
+            scanAnimHandler.removeCallbacks(scanAnimRunnable);
+            scanAnimHandler.post(scanAnimRunnable);
+        }
         noMoveDialogShowing = false;
         heatmapView.clearTrail(); updatePointCount(); setStatus("");
         heatmapView.setScanning(true);
@@ -360,7 +381,10 @@ public class MainActivity extends AppCompatActivity {
         btnStartStop.setText("START");
         btnStartStop.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.start_green));
         btnMark.setEnabled(false);
-        if (scanSpinner != null) scanSpinner.setVisibility(View.GONE);
+        if (tvScanning != null) {
+            scanAnimHandler.removeCallbacks(scanAnimRunnable);
+            tvScanning.setVisibility(View.GONE);
+        }
         stickyStatusUntil = 0; setStatus("");   // clear leftover "keep walking" banner
         heatmapView.setScanning(false);         // triggers weak-cluster + placement computation
         runEndOfScanDiagnostics();

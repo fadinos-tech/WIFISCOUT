@@ -214,7 +214,8 @@ public class WifiHeatmapView extends android.view.View {
 
     public void setScanning(boolean s) {
         scanning = s;
-        if (s) clearSuggestion(); else computeExtenderSuggestion();
+        if (s) clearSuggestion();
+        else { computeExtenderSuggestion(); fillCoverageGaps(); }
         invalidate();
     }
 
@@ -308,6 +309,7 @@ public class WifiHeatmapView extends android.view.View {
         }
         started = true; scanning = false;
         computeExtenderSuggestion();
+        fillCoverageGaps();
         applyMode(); invalidate();
     }
 
@@ -348,6 +350,7 @@ public class WifiHeatmapView extends android.view.View {
         for (ScanPoint p : points) addHeatSample(p.x, p.y, p.rssi);
         worldX = points.get(n - 1).x; worldY = points.get(n - 1).y;
         computeExtenderSuggestion();
+        fillCoverageGaps();
         applyMode(); invalidate();
     }
 
@@ -395,6 +398,55 @@ public class WifiHeatmapView extends android.view.View {
         heatBitmap.setPixels(gridPixels, y0 * GRID_N + x0, GRID_N,
                 x0, y0, x1 - x0 + 1, y1 - y0 + 1);
         contourDirty = true;
+    }
+
+    /**
+     * End-of-scan pass: enclosed black gaps between walked areas get filled
+     * with color interpolated from ALL samples (IDW 1/d²). Cells open to the
+     * outside stay dark — we never invent coverage beyond the walked area.
+     * Slightly lower alpha marks the fill as estimated, not measured.
+     */
+    private void fillCoverageGaps() {
+        if (points.size() < 10) return;
+        boolean[] exterior = new boolean[GRID_N * GRID_N];
+        java.util.ArrayDeque<Integer> stack = new java.util.ArrayDeque<>();
+        for (int i = 0; i < GRID_N; i++) {
+            pushUncovered(stack, exterior, i);                          // top row
+            pushUncovered(stack, exterior, (GRID_N-1)*GRID_N + i);      // bottom row
+            pushUncovered(stack, exterior, i * GRID_N);                 // left col
+            pushUncovered(stack, exterior, i * GRID_N + GRID_N - 1);    // right col
+        }
+        while (!stack.isEmpty()) {
+            int idx = stack.pop();
+            int gx = idx % GRID_N, gy = idx / GRID_N;
+            if (gx > 0)          pushUncovered(stack, exterior, idx - 1);
+            if (gx < GRID_N - 1) pushUncovered(stack, exterior, idx + 1);
+            if (gy > 0)          pushUncovered(stack, exterior, idx - GRID_N);
+            if (gy < GRID_N - 1) pushUncovered(stack, exterior, idx + GRID_N);
+        }
+        int filled = 0;
+        for (int gy = 0; gy < GRID_N; gy++) {
+            for (int gx = 0; gx < GRID_N; gx++) {
+                int idx = gy * GRID_N + gx;
+                if (sumW[idx] >= W_MIN || exterior[idx]) continue;   // covered or outside
+                float cxw = (gx + 0.5f) * CELL, cyw = (gy + 0.5f) * CELL;
+                double sw = 0, swv = 0;
+                for (ScanPoint p : points) {
+                    float dx = p.x - cxw, dy = p.y - cyw;
+                    double w = 1.0 / (dx*dx + dy*dy + 1.0);
+                    sw += w; swv += w * p.rssi;
+                }
+                gridPixels[idx] = setAlpha(heatColorForRssi((float)(swv / sw)),
+                        HEAT_ALPHA - 40);
+                filled++;
+            }
+        }
+        if (filled > 0)
+            heatBitmap.setPixels(gridPixels, 0, GRID_N, 0, 0, GRID_N, GRID_N);
+    }
+
+    private void pushUncovered(java.util.ArrayDeque<Integer> stack, boolean[] visited, int idx) {
+        if (!visited[idx] && sumW[idx] < W_MIN) { visited[idx] = true; stack.push(idx); }
     }
 
     /**

@@ -36,10 +36,11 @@
                         android:layout_height="wrap_content" android:text="Click Solutions"
                         android:textColor="@color/text_secondary" android:textSize="10sp" />
                 </LinearLayout>
-                <ProgressBar android:id="@+id/scanSpinner"
-                    android:layout_width="24dp" android:layout_height="24dp"
-                    android:indeterminate="true"
-                    android:indeterminateTint="#58A6FF"
+                <TextView android:id="@+id/tvScanning"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="" android:textColor="#00E676"
+                    android:textSize="14sp" android:textStyle="bold"
+                    android:fontFamily="monospace" android:letterSpacing="0.15"
                     android:visibility="gone" />
             </LinearLayout>
 
