@@ -130,8 +130,7 @@
                     android:layout_height="match_parent" android:layout_weight="1"
                     android:text="Save" android:textSize="12sp"
                     android:backgroundTint="#1565C0"
-                    android:textColor="@android:color/white" android:layout_marginEnd="5dp"
-                    android:visibility="gone" />
+                    android:textColor="@android:color/white" android:layout_marginEnd="5dp" />
                 <Button android:id="@+id/btnShare" android:layout_width="0dp"
                     android:layout_height="match_parent" android:layout_weight="1"
                     android:text="Share" android:textSize="12sp"
@@ -158,10 +157,11 @@
                     android:backgroundTint="#1E252E"
                     android:textColor="@android:color/white"
                     android:enabled="false" android:layout_marginEnd="5dp" />
-                <Button android:layout_width="0dp" android:layout_height="match_parent"
-                    android:layout_weight="1" android:text=""
-                    android:backgroundTint="#1A1F26"
-                    android:enabled="false" android:layout_marginEnd="5dp" />
+                <Button android:id="@+id/btnScans" android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1" android:text="Scans" android:textSize="12sp"
+                    android:backgroundTint="#00695C"
+                    android:textColor="@android:color/white" android:layout_marginEnd="5dp" />
                 <Button android:layout_width="0dp" android:layout_height="match_parent"
                     android:layout_weight="1" android:text=""
                     android:backgroundTint="#1A1F26"

@@ -24,13 +24,20 @@ public class ScanPoint {
 
     public ScanPoint(int x, int y, int color, int signalLevel, int rssi, String ssid,
                      int freqMhz, int linkMbps, int rttMs, boolean interference) {
+        this(x, y, color, signalLevel, rssi, ssid, freqMhz, linkMbps, rttMs, interference,
+                System.currentTimeMillis());
+    }
+
+    /** Full constructor — used when restoring a saved scan with its original time. */
+    public ScanPoint(int x, int y, int color, int signalLevel, int rssi, String ssid,
+                     int freqMhz, int linkMbps, int rttMs, boolean interference, long timestamp) {
         this.x = x;
         this.y = y;
         this.color = color;
         this.signalLevel = signalLevel;
         this.rssi = rssi;
         this.ssid = ssid;
-        this.timestamp = System.currentTimeMillis();
+        this.timestamp = timestamp;
         this.freqMhz = freqMhz;
         this.linkMbps = linkMbps;
         this.rttMs = rttMs;

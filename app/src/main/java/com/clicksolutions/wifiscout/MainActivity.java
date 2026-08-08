@@ -58,6 +58,7 @@ public class MainActivity extends AppCompatActivity {
 
     private WifiHeatmapView heatmapView;
     private Button          btnStartStop, btnSave, btnShare, btnMark, btnMenu, btnExportCsv;
+    private ScanStorage     scanStorage;
     private TextView        tvSsid, tvSignalStrength, tvSignalQuality;
     private TextView        tvPointCount, tvStatus, tvVersion, tvDrawerVersion, tvThresholdValue, tvNoMoveValue;
     private SeekBar         seekThreshold, seekNoMove;
@@ -262,8 +263,12 @@ public class MainActivity extends AppCompatActivity {
             btnSave.setEnabled(false); btnShare.setEnabled(false);
         });
 
+        scanStorage = new ScanStorage(this);
         btnSave.setEnabled(false);
-        btnSave.setOnClickListener(v -> saveToGallery());
+        btnSave.setOnClickListener(v -> showSaveScanDialog());
+
+        View scansBtn = findViewById(R.id.btnScans);
+        if (scansBtn != null) scansBtn.setOnClickListener(v -> showScansDialog());
 
         btnShare.setEnabled(false);
         btnShare.setOnClickListener(v -> shareImage());
@@ -365,7 +370,8 @@ public class MainActivity extends AppCompatActivity {
         log("Scan stopped  total=" + heatmapView.getPointCount() + "  steps=" + stepCount);
         if (heatmapView.getPointCount() > 0) {
             btnShare.setEnabled(true);
-            saveToGallery();  // auto-save — no Save button anymore
+            btnSave.setEnabled(true);
+            saveToGallery();  // image auto-saved to gallery; Save = keep the session
         }
         if (!silent) showStopReport();
     }
@@ -656,6 +662,102 @@ public class MainActivity extends AppCompatActivity {
         heatmapView.addMarker(m);
         log("Marker added: "+label+" at "+(int)m.worldX+","+(int)m.worldY);
         Toast.makeText(this, label+" marked  (long-press Mark to undo)", Toast.LENGTH_SHORT).show();
+    }
+
+    // ── Saved scans (up to ScanStorage.MAX_SCANS sessions) ────────
+
+    private void showSaveScanDialog() {
+        if (heatmapView.getPointCount() == 0) {
+            Toast.makeText(this, "Nothing to save.", Toast.LENGTH_SHORT).show(); return;
+        }
+        SimpleDateFormat sdf = new SimpleDateFormat("dd/MM HH:mm", Locale.getDefault());
+        EditText et = new EditText(this);
+        et.setText((currentSsid.isEmpty() ? "Scan" : currentSsid) + " " + sdf.format(new Date()));
+        et.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this)
+                .setTitle("Save scan")
+                .setMessage("Name for this scan (" + scanStorage.count() + "/"
+                        + ScanStorage.MAX_SCANS + " saved — oldest is dropped):")
+                .setView(et)
+                .setPositiveButton("Save", (d, w) -> {
+                    String name = et.getText().toString().trim();
+                    if (name.isEmpty()) name = "Scan " + sdf.format(new Date());
+                    ScanRecord r = new ScanRecord(name, currentSsid, currentBssid,
+                            Build.MANUFACTURER + " " + Build.MODEL, Build.VERSION.RELEASE);
+                    r.diagnostics = diagnostics;
+                    r.steps = stepCount;
+                    r.points.addAll(heatmapView.getPoints());
+                    r.roamIndices.addAll(heatmapView.getRoamingIndices());
+                    r.roamLabels.addAll(heatmapView.getRoamingLabels());
+                    r.markers.addAll(heatmapView.getMarkers());
+                    scanStorage.save(r);
+                    Toast.makeText(this, "Scan saved (" + scanStorage.count() + "/"
+                            + ScanStorage.MAX_SCANS + ")", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showScansDialog() {
+        if (isScanning) {
+            Toast.makeText(this, "Stop the scan first.", Toast.LENGTH_SHORT).show(); return;
+        }
+        List<ScanRecord> all = scanStorage.load();
+        if (all.isEmpty()) {
+            Toast.makeText(this, "No saved scans yet — use Save after a scan.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault());
+        String[] items = new String[all.size()];
+        for (int i = 0; i < all.size(); i++) {
+            ScanRecord r = all.get(i);
+            items[i] = r.name + "\n" + sdf.format(new Date(r.timestamp))
+                    + "  ·  " + r.points.size() + " points";
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Saved scans (" + all.size() + "/" + ScanStorage.MAX_SCANS + ")")
+                .setItems(items, (d, which) -> showScanActionsDialog(all.get(which)))
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void showScanActionsDialog(ScanRecord r) {
+        String[] actions = {"Show on map", "Share report", "Export CSV", "Delete"};
+        new AlertDialog.Builder(this)
+                .setTitle(r.name)
+                .setItems(actions, (d, which) -> {
+                    switch (which) {
+                        case 0: loadRecord(r); break;
+                        case 1: loadRecord(r); shareImage(); break;
+                        case 2: loadRecord(r); exportCsv(); break;
+                        case 3:
+                            new AlertDialog.Builder(this)
+                                    .setTitle("Delete \"" + r.name + "\"?")
+                                    .setPositiveButton("Delete", (dd, ww) -> {
+                                        scanStorage.delete(r.id);
+                                        Toast.makeText(this, "Deleted.", Toast.LENGTH_SHORT).show();
+                                    })
+                                    .setNegativeButton("Cancel", null).show();
+                            break;
+                    }
+                })
+                .setNegativeButton("Back", null)
+                .show();
+    }
+
+    /** Puts a saved scan back on the map so Share/CSV/inspection work on it. */
+    private void loadRecord(ScanRecord r) {
+        heatmapView.loadScan(r.points, r.roamIndices, r.roamLabels, r.markers);
+        currentSsid  = r.ssid;
+        currentBssid = r.bssid;
+        diagnostics  = r.diagnostics;
+        stepCount    = r.steps;
+        scanLog.setLength(0);
+        log("Loaded saved scan: " + r.name);
+        btnShare.setEnabled(true);
+        btnSave.setEnabled(false);   // already saved — avoid duplicates
+        updatePointCount();
+        Toast.makeText(this, "Loaded: " + r.name, Toast.LENGTH_SHORT).show();
     }
 
     // ── Save to Gallery ───────────────────────────────────────────

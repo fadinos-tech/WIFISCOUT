@@ -173,6 +173,9 @@ public class WifiHeatmapView extends android.view.View {
                         return true;
                     }
                     @Override public boolean onDoubleTap(MotionEvent e) { centerOnCurrent(); return true; }
+                    @Override public boolean onSingleTapConfirmed(MotionEvent e) {
+                        return handleRoamTap(e.getX(), e.getY());
+                    }
                     @Override public void onLongPress(MotionEvent e) { handleTouch(e.getX(), e.getY()); }
                 });
         scaleDetector = new ScaleGestureDetector(getContext(),
@@ -284,6 +287,24 @@ public class WifiHeatmapView extends android.view.View {
         lastDrawnX = Float.NaN; lastDrawnY = Float.NaN;
         panX = 0; panY = 0; zoom = 1f;
         stopPulse(); invalidate();
+    }
+
+    /** Restores a saved scan onto the map: heat field, path, roams, markers, suggestion. */
+    public void loadScan(List<ScanPoint> pts, List<Integer> roamIdx,
+                         List<String> roamLbls, List<MapMarker> mks) {
+        clearTrail();
+        points.addAll(pts);
+        roamingIndices.addAll(roamIdx);
+        roamingLabels.addAll(roamLbls);
+        markers.addAll(mks);
+        for (ScanPoint p : points) addHeatSample(p.x, p.y, p.rssi);
+        if (!points.isEmpty()) {
+            ScanPoint last = points.get(points.size() - 1);
+            worldX = last.x; worldY = last.y;
+        }
+        started = true; scanning = false;
+        computeExtenderSuggestion();
+        applyMode(); invalidate();
     }
 
     public void resetOrigin() {
@@ -827,22 +848,52 @@ public class WifiHeatmapView extends android.view.View {
         }
     }
 
+    /** Tap on a roam marker → popup with the hand-off details. */
+    private boolean handleRoamTap(float tx, float ty) {
+        for (int i = 0; i < roamingIndices.size(); i++) {
+            int ri = roamingIndices.get(i);
+            if (ri >= points.size()) continue;
+            ScanPoint p = points.get(ri);
+            float sx = toSX(p.x), sy = toSY(p.y);
+            if (Math.hypot(tx - sx, ty - sy) > 48) continue;
+            String label = i < roamingLabels.size() && roamingLabels.get(i) != null
+                    ? roamingLabels.get(i) : "Hand-off";
+            String band = p.freqMhz >= 4900 ? "5 GHz" : p.freqMhz > 0 ? "2.4 GHz" : "?";
+            java.text.SimpleDateFormat sdf =
+                    new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault());
+            StringBuilder msg = new StringBuilder();
+            msg.append("Point #").append(ri + 1)
+               .append("   ").append(sdf.format(new java.util.Date(p.timestamp))).append("\n\n")
+               .append("Signal:  ").append(p.rssi).append(" dBm (").append(band).append(")\n");
+            if (p.linkMbps > 0) msg.append("Link:     ").append(p.linkMbps).append(" Mbps\n");
+            if (p.rttMs   > 0) msg.append("Latency: ").append(p.rttMs).append(" ms\n");
+            if (p.interference) msg.append("\n⚠ Interference suspected at this spot");
+            new android.app.AlertDialog.Builder(getContext())
+                    .setTitle("⇄ Hand-off → " + label)
+                    .setMessage(msg.toString())
+                    .setPositiveButton("OK", null)
+                    .show();
+            return true;
+        }
+        return false;
+    }
+
     /** "⇄ …tag" chip under a roam marker — identifies which AP took over. */
     private void drawRoamLabel(Canvas canvas, float sx, float sy, String label) {
         String text = "⇄ " + label;
         Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
-        lbl.setTextSize(14f); lbl.setTextAlign(Paint.Align.CENTER);
+        lbl.setTextSize(17f); lbl.setTextAlign(Paint.Align.CENTER);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
         float tw = lbl.measureText(text), ly = sy + 44;
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bg.setColor(Color.argb(230, 40, 30, 8));
-        canvas.drawRoundRect(new RectF(sx-tw/2-9, ly, sx+tw/2+9, ly+24), 7, 7, bg);
+        bg.setColor(Color.argb(235, 40, 30, 8));
+        canvas.drawRoundRect(new RectF(sx-tw/2-11, ly, sx+tw/2+11, ly+29), 8, 8, bg);
         Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
-        edge.setStyle(Paint.Style.STROKE); edge.setStrokeWidth(1.5f);
-        edge.setColor(Color.argb(180, 255, 200, 80));
-        canvas.drawRoundRect(new RectF(sx-tw/2-9, ly, sx+tw/2+9, ly+24), 7, 7, edge);
-        lbl.setColor(Color.argb(250, 255, 220, 130));
-        canvas.drawText(text, sx, ly + 17, lbl);
+        edge.setStyle(Paint.Style.STROKE); edge.setStrokeWidth(1.8f);
+        edge.setColor(Color.argb(200, 255, 200, 80));
+        canvas.drawRoundRect(new RectF(sx-tw/2-11, ly, sx+tw/2+11, ly+29), 8, 8, edge);
+        lbl.setColor(Color.argb(252, 255, 220, 130));
+        canvas.drawText(text, sx, ly + 21, lbl);
     }
 
     private void drawFlashRing(Canvas canvas, float sx, float sy) {
