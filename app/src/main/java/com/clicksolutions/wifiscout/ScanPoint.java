@@ -12,7 +12,18 @@ public class ScanPoint {
     public final String ssid;
     public final long timestamp;
 
+    // Diagnostics (v1.1): -1 / false = unknown
+    public final int     freqMhz;      // connection frequency (2412..2484 = 2.4GHz, 5000+ = 5GHz)
+    public final int     linkMbps;     // negotiated link speed
+    public final int     rttMs;        // latency to the gateway
+    public final boolean interference; // good signal but poor performance at this spot
+
     public ScanPoint(int x, int y, int color, int signalLevel, int rssi, String ssid) {
+        this(x, y, color, signalLevel, rssi, ssid, -1, -1, -1, false);
+    }
+
+    public ScanPoint(int x, int y, int color, int signalLevel, int rssi, String ssid,
+                     int freqMhz, int linkMbps, int rttMs, boolean interference) {
         this.x = x;
         this.y = y;
         this.color = color;
@@ -20,7 +31,13 @@ public class ScanPoint {
         this.rssi = rssi;
         this.ssid = ssid;
         this.timestamp = System.currentTimeMillis();
+        this.freqMhz = freqMhz;
+        this.linkMbps = linkMbps;
+        this.rttMs = rttMs;
+        this.interference = interference;
     }
+
+    public boolean is5GHz() { return freqMhz >= 4900; }
 
     public String getQualityLabel() {
         if (signalLevel >= 80) return "מעולה";

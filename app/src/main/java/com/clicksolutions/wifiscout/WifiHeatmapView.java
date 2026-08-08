@@ -82,9 +82,15 @@ public class WifiHeatmapView extends android.view.View {
     private boolean started  = false;
     private boolean scanning = false;  // hide crosshair after stop
 
-    // Extender suggestion (weakest cluster centroid), NaN = none
-    private float suggestX = Float.NaN;
+    // Extender suggestion: weak-cluster centroid + recommended placement, NaN = none
+    private float weakX    = Float.NaN;   // center of the weak zone
+    private float weakY    = Float.NaN;
+    private float suggestX = Float.NaN;   // recommended extender spot (last good point)
     private float suggestY = Float.NaN;
+    private String suggestionNote = "Extender here?";
+
+    // Points where the signal drops far faster than the path-loss model predicts
+    private final List<Integer> obstructionIndices = new ArrayList<>();
 
     // Heading of the phone (degrees, 0 = up/north on the map), NaN = unknown
     private float headingDeg = Float.NaN;
@@ -215,6 +221,11 @@ public class WifiHeatmapView extends android.view.View {
     public void setHeadingDeg(float deg) { headingDeg = deg; if (scanning) invalidate(); }
 
     public void addPoint(int signalLevel, int rssi, String ssid) {
+        addPoint(signalLevel, rssi, ssid, -1, -1, -1, false);
+    }
+
+    public void addPoint(int signalLevel, int rssi, String ssid,
+                         int freqMhz, int linkMbps, int rttMs, boolean interference) {
         if (!started) return;
         // Skip duplicate position — no movement
         if (!Float.isNaN(lastDrawnX)) {
@@ -224,7 +235,8 @@ public class WifiHeatmapView extends android.view.View {
         }
         lastDrawnX = worldX; lastDrawnY = worldY;
         points.add(new ScanPoint((int) worldX, (int) worldY,
-                colorForRssi(rssi, false), signalLevel, rssi, ssid));
+                colorForRssi(rssi, false), signalLevel, rssi, ssid,
+                freqMhz, linkMbps, rttMs, interference));
         addHeatSample(worldX, worldY, rssi);
         pulseNewDot();
         applyMode(); invalidate();
@@ -394,11 +406,26 @@ public class WifiHeatmapView extends android.view.View {
 
     // ── Extender suggestion ──────────────────────────────────────
 
-    private void clearSuggestion() { suggestX = Float.NaN; suggestY = Float.NaN; }
+    private void clearSuggestion() {
+        suggestX = Float.NaN; suggestY = Float.NaN;
+        weakX = Float.NaN;    weakY = Float.NaN;
+        suggestionNote = "Extender here?";
+        obstructionIndices.clear();
+    }
+
+    public boolean hasSuggestion()  { return !Float.isNaN(weakX); }
+    public float getWeakZoneX()     { return weakX; }
+    public float getWeakZoneY()     { return weakY; }
+    public void setSuggestionNote(String note) { suggestionNote = note; invalidate(); }
+    public void setObstructionIndices(List<Integer> idx) {
+        obstructionIndices.clear(); obstructionIndices.addAll(idx); invalidate();
+    }
 
     /**
-     * Finds the centroid of the largest cluster of weak readings.
-     * That is where an extender (or a better-placed one) is needed.
+     * Finds the centroid of the largest cluster of weak readings (the coverage
+     * hole), then recommends placing the extender at the LAST GOOD point on the
+     * walk toward it — an extender inside the dead zone would only repeat a bad
+     * signal.
      */
     private void computeExtenderSuggestion() {
         clearSuggestion();
@@ -423,12 +450,42 @@ public class WifiHeatmapView extends android.view.View {
             float dx = p.x - bestSeed.x, dy = p.y - bestSeed.y;
             if (dx*dx + dy*dy <= clusterR2) { sx += p.x; sy += p.y; n++; }
         }
-        suggestX = sx / n; suggestY = sy / n;
+        weakX = sx / n; weakY = sy / n;
+
+        // Stage C: placement = the still-good point (≥ -60 dBm) closest to the hole
+        ScanPoint bestGood = null; float bestD2 = Float.MAX_VALUE;
+        for (ScanPoint p : points) {
+            if (p.rssi < -60) continue;
+            float dx = p.x - weakX, dy = p.y - weakY;
+            float d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { bestD2 = d2; bestGood = p; }
+        }
+        if (bestGood != null) { suggestX = bestGood.x; suggestY = bestGood.y; }
+        else                  { suggestX = weakX;      suggestY = weakY;      }
     }
 
     private void drawSuggestion(Canvas canvas) {
         if (Float.isNaN(suggestX)) return;
         float sx = toSX(suggestX), sy = toSY(suggestY);
+
+        // dashed link from the recommended spot to the hole it should cover
+        if (!Float.isNaN(weakX) && (weakX != suggestX || weakY != suggestY)) {
+            float hx = toSX(weakX), hy = toSY(weakY);
+            Paint link = new Paint(Paint.ANTI_ALIAS_FLAG);
+            link.setStyle(Paint.Style.STROKE);
+            link.setStrokeWidth(2f);
+            link.setColor(Color.argb(150, 255, 171, 64));
+            link.setPathEffect(new DashPathEffect(new float[]{7, 7}, 0));
+            canvas.drawLine(sx, sy, hx, hy, link);
+            // small dashed ring marking the weak-zone center
+            Paint hole = new Paint(Paint.ANTI_ALIAS_FLAG);
+            hole.setStyle(Paint.Style.STROKE);
+            hole.setStrokeWidth(2f);
+            hole.setColor(Color.argb(190, 255, 82, 82));
+            hole.setPathEffect(new DashPathEffect(new float[]{6, 5}, 0));
+            canvas.drawCircle(hx, hy, 20f, hole);
+        }
+
         float r = 34f;
         Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
         ring.setStyle(Paint.Style.STROKE);
@@ -444,7 +501,7 @@ public class WifiHeatmapView extends android.view.View {
         ico.setTypeface(Typeface.DEFAULT_BOLD);
         canvas.drawText("+", sx, sy + 9f, ico);
 
-        String label = "Extender here";
+        String label = suggestionNote;
         Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
         lbl.setTextSize(13f); lbl.setTextAlign(Paint.Align.CENTER);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
@@ -455,6 +512,60 @@ public class WifiHeatmapView extends android.view.View {
         canvas.drawRoundRect(new RectF(sx-tw/2-8, ly, sx+tw/2+8, ly+21), 5, 5, bg);
         lbl.setColor(Color.argb(240, 255, 200, 120));
         canvas.drawText(label, sx, ly + 15, lbl);
+    }
+
+    /** Stage A overlay — purple hatched circles where signal is good but performance poor. */
+    private void drawInterference(Canvas canvas) {
+        float cx = 0, cy = 0; int n = 0;
+        float r = Math.max(18f, HEAT_RADIUS * 0.55f * zoom);
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fill.setColor(Color.argb(42, 186, 104, 200));
+        Paint stripe = new Paint(Paint.ANTI_ALIAS_FLAG);
+        stripe.setColor(Color.argb(95, 186, 104, 200));
+        stripe.setStrokeWidth(2f);
+        Path clip = new Path();
+        for (ScanPoint p : points) {
+            if (!p.interference) continue;
+            float sx = toSX(p.x), sy = toSY(p.y);
+            cx += sx; cy += sy; n++;
+            canvas.drawCircle(sx, sy, r, fill);
+            clip.rewind();
+            clip.addCircle(sx, sy, r, Path.Direction.CW);
+            canvas.save();
+            canvas.clipPath(clip);
+            for (float d = -2*r; d <= 2*r; d += 11f)
+                canvas.drawLine(sx + d - r, sy + r, sx + d + r, sy - r, stripe);
+            canvas.restore();
+        }
+        if (n >= 3) {
+            String label = "⚠ Interference suspected";
+            Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
+            lbl.setTextSize(13f); lbl.setTextAlign(Paint.Align.CENTER);
+            lbl.setTypeface(Typeface.DEFAULT_BOLD);
+            float tw = lbl.measureText(label), lx = cx/n, ly = cy/n - r - 26;
+            Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+            bg.setColor(Color.argb(225, 45, 20, 50));
+            canvas.drawRoundRect(new RectF(lx-tw/2-8, ly, lx+tw/2+8, ly+21), 6, 6, bg);
+            lbl.setColor(Color.argb(245, 225, 170, 255));
+            canvas.drawText(label, lx, ly + 15, lbl);
+        }
+    }
+
+    /** Stage D badges — orange "!" on points where signal fell far below the model. */
+    private void drawObstructionBadges(Canvas canvas) {
+        if (obstructionIndices.isEmpty()) return;
+        Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
+        dot.setColor(Color.argb(235, 255, 145, 0));
+        Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
+        txt.setColor(Color.WHITE); txt.setTextAlign(Paint.Align.CENTER);
+        txt.setTextSize(11f); txt.setTypeface(Typeface.DEFAULT_BOLD);
+        for (int i : obstructionIndices) {
+            if (i >= points.size()) continue;
+            ScanPoint p = points.get(i);
+            float sx = toSX(p.x), sy = toSY(p.y) - 14f;
+            canvas.drawCircle(sx, sy, 8f, dot);
+            canvas.drawText("!", sx, sy + 4f, txt);
+        }
     }
 
     // ── Pulse animation ──────────────────────────────────────────
@@ -536,9 +647,11 @@ public class WifiHeatmapView extends android.view.View {
                     getWidth()/2f, getHeight()/2f, hintPaint);
         } else {
             drawHeatField(canvas);
+            drawInterference(canvas);
             drawContour(canvas);
             drawWalkPath(canvas);
             drawSampleDots(canvas);
+            drawObstructionBadges(canvas);
             drawStartMarker(canvas);
             drawRoamingMarkers(canvas);
             drawMarkers(canvas);
@@ -872,9 +985,11 @@ public class WifiHeatmapView extends android.view.View {
 
         drawGrid(c);
         drawHeatField(c);
+        drawInterference(c);
         drawContour(c);
         drawWalkPath(c);
         drawSampleDots(c);
+        drawObstructionBadges(c);
         drawStartMarker(c);
         drawRoamingMarkers(c);
         drawMarkers(c);

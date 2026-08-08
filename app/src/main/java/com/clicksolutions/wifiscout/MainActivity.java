@@ -81,8 +81,20 @@ public class MainActivity extends AppCompatActivity {
     private AlertDialog     noMoveDialog;
     private android.widget.ProgressBar scanSpinner;
 
-    // Every distinct BSSID seen this scan, in order of appearance: index 0 = "AP 1" (router)
-    private final List<String> seenBssids = new ArrayList<>();
+    // Every distinct physical AP unit seen this scan, in order: index 0 = "AP 1" (router).
+    // Keyed by the first 5 MAC octets so both radios (2.4/5 GHz) of one unit share a name.
+    private final List<String> seenUnits = new ArrayList<>();
+
+    /** One same-SSID AP heard by a background scan, tied to where we stood. */
+    private static class NeighborSighting {
+        final float x, y; final String bssid; final int rssi, freqMhz;
+        NeighborSighting(float x, float y, String bssid, int rssi, int freqMhz) {
+            this.x = x; this.y = y; this.bssid = bssid; this.rssi = rssi; this.freqMhz = freqMhz;
+        }
+    }
+    private final List<NeighborSighting> sightings = new ArrayList<>();
+    private int    lastFreqMhz = -1;
+    private String diagnostics = "";   // filled at scan stop, shown in the share report
 
     private final StringBuilder scanLog = new StringBuilder();
 
@@ -90,8 +102,10 @@ public class MainActivity extends AppCompatActivity {
         @Override public void onServiceConnected(ComponentName n, IBinder b) {
             scanService = ((WifiScanService.LocalBinder) b).getService();
             serviceBound = true;
-            scanService.setScanCallback((rssi, level, ssid) ->
-                    runOnUiThread(() -> onNewScanResult(rssi, level, ssid)));
+            scanService.setScanCallback((rssi, level, ssid, freq, link, rtt) ->
+                    runOnUiThread(() -> onNewScanResult(rssi, level, ssid, freq, link, rtt)));
+            scanService.setNeighborCallback(results ->
+                    runOnUiThread(() -> onNeighborResults(results)));
         }
         @Override public void onServiceDisconnected(ComponentName n) {
             serviceBound = false; scanService = null;
@@ -136,7 +150,10 @@ public class MainActivity extends AppCompatActivity {
         noMoveDialogShowing = false;
         if (isScanning) stopScanning(true);
         if (serviceBound) {
-            if (scanService != null) scanService.setScanCallback(null);
+            if (scanService != null) {
+                scanService.setScanCallback(null);
+                scanService.setNeighborCallback(null);
+            }
             unbindService(serviceConnection);
             serviceBound = false;
         }
@@ -310,7 +327,7 @@ public class MainActivity extends AppCompatActivity {
     private void startScanning() {
         isScanning = true; stepCount = 0; noMoveCount = 0;
         lastStepAtScan = -1; currentSsid = ""; currentBssid = ""; lastBssid = "";
-        seenBssids.clear();
+        seenUnits.clear(); sightings.clear(); diagnostics = ""; lastFreqMhz = -1;
         scanLog.setLength(0);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         btnStartStop.setText("STOP");
@@ -340,7 +357,8 @@ public class MainActivity extends AppCompatActivity {
         btnMark.setEnabled(false);
         if (scanSpinner != null) scanSpinner.setVisibility(View.GONE);
         stickyStatusUntil = 0; setStatus("");   // clear leftover "keep walking" banner
-        heatmapView.setScanning(false);
+        heatmapView.setScanning(false);         // triggers weak-cluster + placement computation
+        runEndOfScanDiagnostics();
         stepNavigator.stop();
         // Shut the service down completely so its notification disappears immediately
         if (serviceBound && scanService != null) scanService.shutdown();
@@ -380,9 +398,11 @@ public class MainActivity extends AppCompatActivity {
         d.show();
     }
 
-    private void onNewScanResult(int rssi, int signalLevel, String ssid) {
+    private void onNewScanResult(int rssi, int signalLevel, String ssid,
+                                 int freqMhz, int linkMbps, int rttMs) {
         if (!isScanning) return;
         heatmapView.setHeadingDeg(stepNavigator.getAzimuthDeg());
+        lastFreqMhz = freqMhz;
         String bssid = getBssid();
         if (currentSsid.isEmpty() && !ssid.equals("<unknown ssid>")) {
             currentSsid = ssid; currentBssid = bssid; lastBssid = bssid;
@@ -390,34 +410,80 @@ public class MainActivity extends AppCompatActivity {
         }
         if (!lastBssid.isEmpty() && !bssid.equals(lastBssid)
                 && !bssid.equals("N/A") && !bssid.equals("<none>")) {
-            log("ROAMING  old=" + lastBssid + "  new=" + bssid);
-            onRoamingDetected(lastBssid, bssid);
+            onRoamingDetected(lastBssid, bssid, freqMhz);
             lastBssid = bssid;
         }
         String name = ssid.isEmpty()||ssid.equals("<unknown ssid>") ? "Not connected" : ssid;
         tvSsid.setText("Network: " + name);
-        tvSignalStrength.setText(rssi + " dBm");
+        tvSignalStrength.setText(rssi + " dBm" + (freqMhz >= 4900 ? " (5G)" : freqMhz > 0 ? " (2.4G)" : ""));
         tvSignalQuality.setText(qualityLabel(signalLevel));
         checkNoMove();
         if (stepCount > 0) {
-            heatmapView.addPoint(signalLevel, rssi, ssid);
-            log("WiFi  rssi="+rssi+"  quality="+qualityLabel(signalLevel)
-                    +"  point#="+heatmapView.getPointCount()+"  step#="+stepCount);
+            heatmapView.addPoint(signalLevel, rssi, ssid, freqMhz, linkMbps, rttMs,
+                    isInterferenceSuspected(rssi, freqMhz, linkMbps, rttMs));
+            log("WiFi  rssi="+rssi+"  freq="+freqMhz+"  link="+linkMbps+"Mbps  rtt="+rttMs
+                    +"ms  point#="+heatmapView.getPointCount()+"  step#="+stepCount);
         }
         updatePointCount();
     }
 
-    /** Friendly sequential name for a BSSID: "AP 1" = router, "AP 2" = first extender... */
+    /**
+     * Stage A — interference heuristic: strong signal but poor performance.
+     * Never a verdict on a single metric; RSSI must be good AND at least one
+     * performance metric must be clearly bad.
+     */
+    private boolean isInterferenceSuspected(int rssi, int freqMhz, int linkMbps, int rttMs) {
+        if (rssi < -60) return false;                       // weak signal explains itself
+        boolean lowLink = linkMbps > 0 && linkMbps < (freqMhz >= 4900 ? 60 : 25);
+        boolean highRtt = rttMs >= 120;
+        return lowLink || highRtt;
+    }
+
+    /** Stage B — remember every same-SSID AP audible from the current position. */
+    private void onNeighborResults(List<android.net.wifi.ScanResult> results) {
+        if (!isScanning) return;
+        float x = heatmapView.getCurrentWorldX(), y = heatmapView.getCurrentWorldY();
+        for (android.net.wifi.ScanResult r : results) {
+            if (sightings.size() >= 600) break;
+            sightings.add(new NeighborSighting(x, y, r.BSSID, r.level, r.frequency));
+        }
+        log("BG-SCAN  heard " + results.size() + " same-SSID AP(s) here");
+    }
+
+    /** Physical-unit key: first 5 MAC octets — both radios of one unit share it. */
+    private String unitKey(String bssid) {
+        String b = bssid.toLowerCase(Locale.US);
+        return b.length() >= 14 ? b.substring(0, 14) : b;
+    }
+
+    private boolean sameUnit(String b1, String b2) { return unitKey(b1).equals(unitKey(b2)); }
+
+    /** Friendly sequential name per physical AP: "AP 1" = router, "AP 2" = first extender... */
     private String apName(String bssid) {
-        int idx = seenBssids.indexOf(bssid);
-        if (idx < 0) { seenBssids.add(bssid); idx = seenBssids.size() - 1; }
+        String key = unitKey(bssid);
+        int idx = seenUnits.indexOf(key);
+        if (idx < 0) { seenUnits.add(key); idx = seenUnits.size() - 1; }
         return "AP " + (idx + 1);
     }
 
-    /** Real-time indication when the phone roams to another AP (extender) on the same SSID. */
-    private void onRoamingDetected(String oldBssid, String newBssid) {
+    /**
+     * BSSID changed. Two very different cases:
+     *  - same physical unit, other radio  → band steering (2.4↔5 GHz), NOT an extender
+     *  - different unit                   → real hand-off between router/extenders
+     */
+    private void onRoamingDetected(String oldBssid, String newBssid, int newFreqMhz) {
         apName(oldBssid);              // make sure the origin AP is registered first
+        boolean bandSwitch = sameUnit(oldBssid, newBssid);
+        String band = newFreqMhz >= 4900 ? "5GHz" : "2.4GHz";
+        if (bandSwitch) {
+            log("BAND CHANGE  " + oldBssid + " -> " + newBssid + "  now " + band);
+            heatmapView.markRoaming(band);
+            stickyStatusUntil = System.currentTimeMillis() + 4000;
+            setStatus("⇄ Band change → " + band + " (same router)");
+            return;   // no vibration — not a real extender hand-off
+        }
         String apTag = apName(newBssid);
+        log("ROAMING  old=" + oldBssid + "  new=" + newBssid + "  = " + apTag);
         heatmapView.markRoaming(apTag);
         // Vibrate so the user feels the hand-off while walking
         try {
@@ -428,12 +494,104 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
         // Sticky banner for 4 seconds (step updates won't wipe it)
         stickyStatusUntil = System.currentTimeMillis() + 4000;
-        setStatus("⇄ Roaming → " + apTag + "  (" + shortBssid(newBssid) + ")");
+        setStatus("⇄ Roaming → " + apTag + "  (" + shortBssid(newBssid) + ", " + band + ")");
         Toast.makeText(this, "Roaming → " + apTag, Toast.LENGTH_SHORT).show();
     }
 
     private String shortBssid(String b) {
         return b.length() >= 5 ? b.substring(b.length() - 5) : b;
+    }
+
+    // ── End-of-scan diagnostics (stages B + D) ────────────────────
+
+    private void runEndOfScanDiagnostics() {
+        StringBuilder diag = new StringBuilder();
+
+        // Interference zones (stage A summary)
+        int interferencePts = 0;
+        List<ScanPoint> pts = heatmapView.getPoints();
+        for (ScanPoint p : pts) if (p.interference) interferencePts++;
+        if (interferencePts >= 3) {
+            diag.append("Interference SUSPECTED at ").append(interferencePts)
+                .append(" points: good signal but poor link speed/latency.\n")
+                .append("Possible causes: noise source (speaker/microwave/BT), channel congestion.\n");
+        }
+
+        // Stage B — smart extender verdict for the weak zone
+        if (heatmapView.hasSuggestion()) {
+            float wx = heatmapView.getWeakZoneX(), wy = heatmapView.getWeakZoneY();
+            NeighborSighting best = null;
+            for (NeighborSighting s : sightings) {
+                float dx = s.x - wx, dy = s.y - wy;
+                if (dx*dx + dy*dy > 250f*250f) continue;   // heard near the weak zone
+                if (s.rssi < -62) continue;                // and clearly strong
+                if (best == null || s.rssi > best.rssi) best = s;
+            }
+            if (best != null) {
+                // Connection there was weak while another same-SSID radio was strong
+                // → the AP exists, the phone just refused to roam (sticky client)
+                String tag = apName(best.bssid);
+                heatmapView.setSuggestionNote("⚠ " + tag + " is strong here — phone didn't roam");
+                diag.append("Weak zone verdict: ").append(tag).append(" (")
+                    .append(shortBssid(best.bssid)).append(", ").append(best.rssi)
+                    .append(" dBm) is audible there — NOT a coverage hole.\n")
+                    .append("Fix roaming (802.11k/v/r, AP placement), don't add hardware.\n");
+            } else if (!sightings.isEmpty()) {
+                heatmapView.setSuggestionNote("Place extender here");
+                diag.append("Weak zone verdict: no other same-SSID AP audible — ")
+                    .append("a real coverage hole. Extender recommended at the marked spot.\n");
+            } else {
+                // no background scan data — keep the default cautious label
+                heatmapView.setSuggestionNote("Extender here?");
+            }
+        }
+
+        // Stage D — signal drop vs expected path loss (reference = start at ~1 m)
+        String obstruction = analyzeObstruction(pts);
+        if (!obstruction.isEmpty()) diag.append(obstruction);
+
+        // Neighbor inventory
+        if (!sightings.isEmpty()) {
+            java.util.Map<String, Integer> bestPerUnit = new java.util.LinkedHashMap<>();
+            for (NeighborSighting s : sightings) {
+                String key = unitKey(s.bssid);
+                Integer cur = bestPerUnit.get(key);
+                if (cur == null || s.rssi > cur) bestPerUnit.put(key, s.rssi);
+            }
+            diag.append("Same-SSID units heard during walk: ").append(bestPerUnit.size()).append("\n");
+        }
+
+        diagnostics = diag.toString();
+        if (interferencePts >= 3)
+            Toast.makeText(this, "Interference suspected — see purple zones", Toast.LENGTH_LONG).show();
+    }
+
+    /**
+     * Stage D: compare measured RSSI against an indoor path-loss model using the
+     * first readings (taken ~1 m from the router) as reference. Only points before
+     * the first hand-off count — distances to the router are meaningless afterwards.
+     */
+    private String analyzeObstruction(List<ScanPoint> pts) {
+        if (pts.size() < 8) return "";
+        List<Integer> roamIdx = heatmapView.getRoamingIndices();
+        int limit = roamIdx.isEmpty() ? pts.size() : roamIdx.get(0);
+        if (limit < 8) return "";
+        float ref = (pts.get(0).rssi + pts.get(1).rssi + pts.get(2).rssi) / 3f;
+        float ox = heatmapView.getWorldOriginX(), oy = heatmapView.getWorldOriginY();
+        List<Integer> flagged = new ArrayList<>();
+        for (int i = 3; i < limit; i++) {
+            ScanPoint p = pts.get(i);
+            float dm = (float) Math.hypot(p.x - ox, p.y - oy) / 71f;  // world units → meters
+            if (dm < 3f) continue;                                    // model unreliable up close
+            // indoor model: n≈2.8; flag only a drastic gap (22 dB) to avoid false alarms
+            float expected = ref - 28f * (float) Math.log10(dm);
+            if (p.rssi < expected - 22f) flagged.add(i);
+        }
+        if (flagged.size() < 3) return "";
+        heatmapView.setObstructionIndices(flagged);
+        return "Signal drops MUCH faster than expected near the router ("
+                + flagged.size() + " points) — check: router inside a cabinet, "
+                + "thick wall/metal, or an interference source on the way.\n";
     }
 
     private void checkNoMove() {
@@ -555,7 +713,8 @@ public class MainActivity extends AppCompatActivity {
         // roam events by point index → tag of the AP that took over
         List<Integer> roamIdx = heatmapView.getRoamingIndices();
         List<String>  roamLbl = heatmapView.getRoamingLabels();
-        StringBuilder csv=new StringBuilder("index,x,y,rssi,quality,ssid,roamed_to_ap\n");
+        StringBuilder csv=new StringBuilder(
+                "index,x,y,rssi,quality,ssid,freq_mhz,link_mbps,rtt_ms,interference,roamed_to_ap\n");
         for(int i=0;i<pts.size();i++){
             ScanPoint p=pts.get(i);
             String roam="";
@@ -565,6 +724,10 @@ public class MainActivity extends AppCompatActivity {
                     .append(",").append(p.rssi).append(",")
                     .append(qualityLabel(p.signalLevel)).append(",")
                     .append(p.ssid).append(",")
+                    .append(p.freqMhz).append(",")
+                    .append(p.linkMbps).append(",")
+                    .append(p.rttMs).append(",")
+                    .append(p.interference?"YES":"").append(",")
                     .append(roam).append("\n");
         }
         SimpleDateFormat sdf=new SimpleDateFormat("yyyyMMdd_HHmmss",Locale.getDefault());
@@ -623,6 +786,7 @@ public class MainActivity extends AppCompatActivity {
                 +"Points:  "+total+"  Good:"+green+"  Fair:"+yellow+"  Weak:"+red+"\n"
                 +"Steps:   "+stepCount+"\n"
                 +"\n--- Roaming ---\n"+roams
+                +(diagnostics.isEmpty()?"":"\n--- Diagnostics ---\n"+diagnostics)
                 +"\n--- Scan Log ---\n"+scanLog
                 +"\nGenerated by WiFi Scout - Click Solutions Pro";
     }
