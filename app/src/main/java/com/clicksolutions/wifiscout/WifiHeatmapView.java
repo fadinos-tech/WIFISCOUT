@@ -127,11 +127,21 @@ public class WifiHeatmapView extends android.view.View {
     private GestureDetector      gestureDetector;
     private ScaleGestureDetector scaleDetector;
 
+    // Display density — all overlay text/UI sizes are in dp so they are
+    // readable on every screen (raw px looked microscopic on xxhdpi phones)
+    private float dp = 1f;
+
+    /** Fired when the user taps the empty map ("Tap to start") before a scan. */
+    public interface OnStartTapListener { void onStartTap(); }
+    private OnStartTapListener startTapListener;
+    public void setOnStartTapListener(OnStartTapListener l) { startTapListener = l; }
+
     public WifiHeatmapView(Context c) { super(c); init(); }
     public WifiHeatmapView(Context c, AttributeSet a) { super(c, a); init(); }
     public WifiHeatmapView(Context c, AttributeSet a, int d) { super(c, a, d); init(); }
 
     private void init() {
+        dp = getResources().getDisplayMetrics().density;
         heatBitmap = Bitmap.createBitmap(GRID_N, GRID_N, Bitmap.Config.ARGB_8888);
 
         pathPaint.setStyle(Paint.Style.STROKE);
@@ -141,7 +151,7 @@ public class WifiHeatmapView extends android.view.View {
 
         dotPaint.setStyle(Paint.Style.FILL);
         dotRimPaint.setStyle(Paint.Style.STROKE);
-        dotRimPaint.setStrokeWidth(1.5f);
+        dotRimPaint.setStrokeWidth(1.2f * dp);
         dotRimPaint.setColor(Color.argb(150, 6, 8, 16));
 
         gridPaint.setColor(Color.argb(10, 255, 255, 255));
@@ -149,7 +159,7 @@ public class WifiHeatmapView extends android.view.View {
         gridPaint.setStyle(Paint.Style.STROKE);
 
         hintPaint.setColor(Color.argb(60, 255, 255, 255));
-        hintPaint.setTextSize(36f);
+        hintPaint.setTextSize(15f * dp);
         hintPaint.setTextAlign(Paint.Align.CENTER);
         hintPaint.setAntiAlias(true);
 
@@ -159,9 +169,9 @@ public class WifiHeatmapView extends android.view.View {
         miniDotPaint.setAntiAlias(true);
 
         contourPaint.setStyle(Paint.Style.STROKE);
-        contourPaint.setStrokeWidth(2.5f);
+        contourPaint.setStrokeWidth(1.8f * dp);
         contourPaint.setColor(Color.argb(200, 255, 110, 60));
-        contourPaint.setPathEffect(new DashPathEffect(new float[]{9, 6}, 0));
+        contourPaint.setPathEffect(new DashPathEffect(new float[]{8 * dp, 5 * dp}, 0));
 
         setupGestures();
     }
@@ -175,6 +185,11 @@ public class WifiHeatmapView extends android.view.View {
                     }
                     @Override public boolean onDoubleTap(MotionEvent e) { centerOnCurrent(); return true; }
                     @Override public boolean onSingleTapConfirmed(MotionEvent e) {
+                        // empty map before a scan → tapping it starts scanning
+                        if (!started && points.isEmpty()) {
+                            if (startTapListener != null) startTapListener.onStartTap();
+                            return true;
+                        }
                         return handleRoamTap(e.getX(), e.getY());
                     }
                     @Override public void onLongPress(MotionEvent e) { handleTouch(e.getX(), e.getY()); }
@@ -591,56 +606,56 @@ public class WifiHeatmapView extends android.view.View {
             float hx = toSX(weakX), hy = toSY(weakY);
             Paint link = new Paint(Paint.ANTI_ALIAS_FLAG);
             link.setStyle(Paint.Style.STROKE);
-            link.setStrokeWidth(2f);
+            link.setStrokeWidth(1.8f * dp);
             link.setColor(Color.argb(150, 255, 171, 64));
-            link.setPathEffect(new DashPathEffect(new float[]{7, 7}, 0));
+            link.setPathEffect(new DashPathEffect(new float[]{6*dp, 6*dp}, 0));
             canvas.drawLine(sx, sy, hx, hy, link);
             // small dashed ring marking the weak-zone center
             Paint hole = new Paint(Paint.ANTI_ALIAS_FLAG);
             hole.setStyle(Paint.Style.STROKE);
-            hole.setStrokeWidth(2f);
+            hole.setStrokeWidth(1.8f * dp);
             hole.setColor(Color.argb(190, 255, 82, 82));
-            hole.setPathEffect(new DashPathEffect(new float[]{6, 5}, 0));
-            canvas.drawCircle(hx, hy, 20f, hole);
+            hole.setPathEffect(new DashPathEffect(new float[]{5*dp, 4*dp}, 0));
+            canvas.drawCircle(hx, hy, 16f * dp, hole);
         }
 
-        float r = 34f;
+        float r = 26f * dp;
         Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
         ring.setStyle(Paint.Style.STROKE);
-        ring.setStrokeWidth(2.5f);
+        ring.setStrokeWidth(2f * dp);
         ring.setColor(Color.argb(230, 255, 171, 64));
-        ring.setPathEffect(new DashPathEffect(new float[]{10, 6}, 0));
+        ring.setPathEffect(new DashPathEffect(new float[]{8*dp, 5*dp}, 0));
         canvas.drawCircle(sx, sy, r, ring);
 
         Paint ico = new Paint(Paint.ANTI_ALIAS_FLAG);
         ico.setColor(Color.argb(240, 255, 171, 64));
         ico.setTextAlign(Paint.Align.CENTER);
-        ico.setTextSize(26f);
+        ico.setTextSize(20f * dp);
         ico.setTypeface(Typeface.DEFAULT_BOLD);
-        canvas.drawText("+", sx, sy + 9f, ico);
+        canvas.drawText("+", sx, sy + 7f * dp, ico);
 
         String label = suggestionNote;
         Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
-        lbl.setTextSize(13f); lbl.setTextAlign(Paint.Align.CENTER);
+        lbl.setTextSize(12f * dp); lbl.setTextAlign(Paint.Align.CENTER);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
         float tw = lbl.measureText(label);
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bg.setColor(Color.argb(220, 40, 26, 6));
-        float ly = sy + r + 6;
-        canvas.drawRoundRect(new RectF(sx-tw/2-8, ly, sx+tw/2+8, ly+21), 5, 5, bg);
-        lbl.setColor(Color.argb(240, 255, 200, 120));
-        canvas.drawText(label, sx, ly + 15, lbl);
+        bg.setColor(Color.argb(230, 40, 26, 6));
+        float ly = sy + r + 5*dp;
+        canvas.drawRoundRect(new RectF(sx-tw/2-8*dp, ly, sx+tw/2+8*dp, ly+20*dp), 5*dp, 5*dp, bg);
+        lbl.setColor(Color.argb(245, 255, 200, 120));
+        canvas.drawText(label, sx, ly + 14.5f*dp, lbl);
     }
 
     /** Stage A overlay — purple hatched circles where signal is good but performance poor. */
     private void drawInterference(Canvas canvas) {
         float cx = 0, cy = 0; int n = 0;
-        float r = Math.max(18f, HEAT_RADIUS * 0.55f * zoom);
+        float r = Math.max(16f * dp, HEAT_RADIUS * 0.55f * zoom);
         Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
-        fill.setColor(Color.argb(42, 186, 104, 200));
+        fill.setColor(Color.argb(52, 186, 104, 200));
         Paint stripe = new Paint(Paint.ANTI_ALIAS_FLAG);
-        stripe.setColor(Color.argb(95, 186, 104, 200));
-        stripe.setStrokeWidth(2f);
+        stripe.setColor(Color.argb(115, 186, 104, 200));
+        stripe.setStrokeWidth(2f * dp);
         Path clip = new Path();
         for (ScanPoint p : points) {
             if (!p.interference) continue;
@@ -651,21 +666,26 @@ public class WifiHeatmapView extends android.view.View {
             clip.addCircle(sx, sy, r, Path.Direction.CW);
             canvas.save();
             canvas.clipPath(clip);
-            for (float d = -2*r; d <= 2*r; d += 11f)
+            for (float d = -2*r; d <= 2*r; d += 9f * dp)
                 canvas.drawLine(sx + d - r, sy + r, sx + d + r, sy - r, stripe);
             canvas.restore();
         }
         if (n >= 3) {
             String label = "⚠ Interference suspected";
             Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
-            lbl.setTextSize(13f); lbl.setTextAlign(Paint.Align.CENTER);
+            lbl.setTextSize(13f * dp); lbl.setTextAlign(Paint.Align.CENTER);
             lbl.setTypeface(Typeface.DEFAULT_BOLD);
-            float tw = lbl.measureText(label), lx = cx/n, ly = cy/n - r - 26;
+            float tw = lbl.measureText(label), lx = cx/n, ly = cy/n - r - 24*dp;
+            RectF chip = new RectF(lx-tw/2-9*dp, ly, lx+tw/2+9*dp, ly+22*dp);
             Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
-            bg.setColor(Color.argb(225, 45, 20, 50));
-            canvas.drawRoundRect(new RectF(lx-tw/2-8, ly, lx+tw/2+8, ly+21), 6, 6, bg);
-            lbl.setColor(Color.argb(245, 225, 170, 255));
-            canvas.drawText(label, lx, ly + 15, lbl);
+            bg.setColor(Color.argb(235, 45, 20, 50));
+            canvas.drawRoundRect(chip, 6*dp, 6*dp, bg);
+            Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+            edge.setStyle(Paint.Style.STROKE); edge.setStrokeWidth(1.5f * dp);
+            edge.setColor(Color.argb(200, 210, 140, 255));
+            canvas.drawRoundRect(chip, 6*dp, 6*dp, edge);
+            lbl.setColor(Color.argb(250, 230, 180, 255));
+            canvas.drawText(label, lx, ly + 16*dp, lbl);
         }
     }
 
@@ -676,13 +696,13 @@ public class WifiHeatmapView extends android.view.View {
         dot.setColor(Color.argb(235, 255, 145, 0));
         Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
         txt.setColor(Color.WHITE); txt.setTextAlign(Paint.Align.CENTER);
-        txt.setTextSize(11f); txt.setTypeface(Typeface.DEFAULT_BOLD);
+        txt.setTextSize(10f * dp); txt.setTypeface(Typeface.DEFAULT_BOLD);
         for (int i : obstructionIndices) {
             if (i >= points.size()) continue;
             ScanPoint p = points.get(i);
-            float sx = toSX(p.x), sy = toSY(p.y) - 14f;
-            canvas.drawCircle(sx, sy, 8f, dot);
-            canvas.drawText("!", sx, sy + 4f, txt);
+            float sx = toSX(p.x), sy = toSY(p.y) - 12f * dp;
+            canvas.drawCircle(sx, sy, 7f * dp, dot);
+            canvas.drawText("!", sx, sy + 3.5f * dp, txt);
         }
     }
 
@@ -761,7 +781,7 @@ public class WifiHeatmapView extends android.view.View {
         drawGrid(canvas);
 
         if (!started && points.isEmpty()) {
-            canvas.drawText("Tap START and walk around",
+            canvas.drawText("Tap here to START scanning",
                     getWidth()/2f, getHeight()/2f, hintPaint);
         } else {
             drawHeatField(canvas);
@@ -776,8 +796,8 @@ public class WifiHeatmapView extends android.view.View {
             drawSuggestion(canvas);
             if (scanning) drawCurrentPosition(canvas);
             if (mapMode == MapMode.FREE_SCROLL) drawMiniMap(canvas);
-            drawSignalLegend(canvas, 12f, getHeight() - 34f, 150f);
-            drawScaleBar(canvas, getWidth() - 24f, getHeight() - 22f);
+            drawSignalLegend(canvas, 12f*dp, getHeight() - 30f*dp, 130f*dp);
+            drawScaleBar(canvas, getWidth() - 16f*dp, getHeight() - 16f*dp);
         }
     }
 
@@ -794,7 +814,7 @@ public class WifiHeatmapView extends android.view.View {
         }
         ScanPoint last = points.get(points.size() - 1);
         walkPath.lineTo(toSX(last.x), toSY(last.y));
-        pathPaint.setStrokeWidth(3f);
+        pathPaint.setStrokeWidth(2.2f * dp);
         canvas.drawPath(walkPath, pathPaint);
     }
 
@@ -807,7 +827,7 @@ public class WifiHeatmapView extends android.view.View {
 
     /** Small colored dots at each measurement; rim color identifies the serving AP. */
     private void drawSampleDots(Canvas canvas) {
-        float r = Math.max(3.5f, Math.min(7f, 5f * zoom));
+        float r = Math.max(3.5f * dp, Math.min(6.5f * dp, 5f * zoom * dp));
         for (int i = 0; i < points.size(); i++) {
             ScanPoint p = points.get(i);
             float sx = toSX(p.x), sy = toSY(p.y);
@@ -824,29 +844,29 @@ public class WifiHeatmapView extends android.view.View {
         float sx = toSX(WORLD_ORIGIN), sy = toSY(WORLD_ORIGIN);
         Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
         halo.setColor(Color.argb(60, 21, 101, 192));
-        canvas.drawCircle(sx, sy, 26f, halo);
+        canvas.drawCircle(sx, sy, 20f * dp, halo);
         Paint body = new Paint(Paint.ANTI_ALIAS_FLAG);
         body.setColor(Color.rgb(21, 101, 192));
-        canvas.drawCircle(sx, sy, 17f, body);
+        canvas.drawCircle(sx, sy, 13f * dp, body);
         Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
-        ring.setStyle(Paint.Style.STROKE); ring.setStrokeWidth(2.5f);
+        ring.setStyle(Paint.Style.STROKE); ring.setStrokeWidth(2f * dp);
         ring.setColor(Color.WHITE);
-        canvas.drawCircle(sx, sy, 17f, ring);
+        canvas.drawCircle(sx, sy, 13f * dp, ring);
         Paint ico = new Paint(Paint.ANTI_ALIAS_FLAG);
         ico.setColor(Color.WHITE); ico.setTextAlign(Paint.Align.CENTER);
-        ico.setTextSize(17f); ico.setTypeface(Typeface.DEFAULT_BOLD);
-        canvas.drawText("R", sx, sy + 6f, ico);
+        ico.setTextSize(13f * dp); ico.setTypeface(Typeface.DEFAULT_BOLD);
+        canvas.drawText("R", sx, sy + 4.5f * dp, ico);
 
         String label = "Router / Start";
         Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
-        lbl.setTextSize(12f); lbl.setTextAlign(Paint.Align.CENTER);
+        lbl.setTextSize(11f * dp); lbl.setTextAlign(Paint.Align.CENTER);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
-        float tw = lbl.measureText(label), ly = sy + 24f;
+        float tw = lbl.measureText(label), ly = sy + 18f * dp;
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
         bg.setColor(Color.argb(220, 8, 25, 50));
-        canvas.drawRoundRect(new RectF(sx-tw/2-7, ly, sx+tw/2+7, ly+20), 6, 6, bg);
+        canvas.drawRoundRect(new RectF(sx-tw/2-6*dp, ly, sx+tw/2+6*dp, ly+17*dp), 5*dp, 5*dp, bg);
         lbl.setColor(Color.argb(240, 160, 205, 255));
-        canvas.drawText(label, sx, ly + 14.5f, lbl);
+        canvas.drawText(label, sx, ly + 12.5f * dp, lbl);
     }
 
     /** Google-Maps-style position puck: heading cone + blue dot with white ring. */
@@ -855,32 +875,33 @@ public class WifiHeatmapView extends android.view.View {
         float sx = toSX(worldX), sy = toSY(worldY);
 
         if (!Float.isNaN(headingDeg)) {
+            float coneR = 38f * dp;
             Paint cone = new Paint(Paint.ANTI_ALIAS_FLAG);
-            cone.setShader(new RadialGradient(sx, sy, 46f,
+            cone.setShader(new RadialGradient(sx, sy, coneR,
                     Color.argb(110, 88, 166, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP));
             // canvas angles: 0° = east; heading 0° = up
             float start = headingDeg - 90f - 35f;
-            canvas.drawArc(new RectF(sx-46, sy-46, sx+46, sy+46), start, 70f, true, cone);
+            canvas.drawArc(new RectF(sx-coneR, sy-coneR, sx+coneR, sy+coneR), start, 70f, true, cone);
         }
 
         Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
         halo.setColor(Color.argb(50, 88, 166, 255));
-        canvas.drawCircle(sx, sy, 18f, halo);
+        canvas.drawCircle(sx, sy, 15f * dp, halo);
         Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
         ring.setColor(Color.WHITE);
-        canvas.drawCircle(sx, sy, 11f, ring);
+        canvas.drawCircle(sx, sy, 9f * dp, ring);
         Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
         dot.setColor(Color.rgb(66, 133, 244));
-        canvas.drawCircle(sx, sy, 8f, dot);
+        canvas.drawCircle(sx, sy, 6.5f * dp, dot);
     }
 
     /** Gradient legend bar: -90 dBm (red) → -45 dBm (green). */
     private void drawSignalLegend(Canvas canvas, float x, float y, float w) {
         if (points.isEmpty()) return;
-        float h = 9f;
+        float h = 8f * dp;
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bg.setColor(Color.argb(160, 10, 15, 25));
-        canvas.drawRoundRect(new RectF(x-6, y-16, x+w+6, y+h+16), 7, 7, bg);
+        bg.setColor(Color.argb(170, 10, 15, 25));
+        canvas.drawRoundRect(new RectF(x-6*dp, y-16*dp, x+w+6*dp, y+h+6*dp), 6*dp, 6*dp, bg);
 
         // gradient built from the heat stops, weak (left) → strong (right)
         int n = HEAT_STOPS.length;
@@ -893,14 +914,14 @@ public class WifiHeatmapView extends android.view.View {
         }
         Paint bar = new Paint(Paint.ANTI_ALIAS_FLAG);
         bar.setShader(new LinearGradient(x, 0, x+w, 0, cols, pos, Shader.TileMode.CLAMP));
-        canvas.drawRoundRect(new RectF(x, y, x+w, y+h), 4, 4, bar);
+        canvas.drawRoundRect(new RectF(x, y, x+w, y+h), 3*dp, 3*dp, bar);
 
         Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
-        txt.setColor(Color.argb(200, 255, 255, 255));
-        txt.setTextSize(10f);
-        canvas.drawText((int) lo + " dBm", x, y - 4, txt);
+        txt.setColor(Color.argb(220, 255, 255, 255));
+        txt.setTextSize(10f * dp);
+        canvas.drawText((int) lo + " dBm", x, y - 4*dp, txt);
         txt.setTextAlign(Paint.Align.RIGHT);
-        canvas.drawText((int) hi + " dBm", x + w, y - 4, txt);
+        canvas.drawText((int) hi + " dBm", x + w, y - 4*dp, txt);
     }
 
     /** Metric scale bar (right-bottom), rounded to 1/2/5/10/20 m for the current zoom. */
@@ -909,23 +930,23 @@ public class WifiHeatmapView extends android.view.View {
         float[] steps = {0.5f, 1f, 2f, 5f, 10f, 20f, 50f};
         float meters = steps[steps.length-1];
         for (float s : steps) {
-            if (s * UNITS_PER_METER * zoom >= 56f) { meters = s; break; }
+            if (s * UNITS_PER_METER * zoom >= 48f * dp) { meters = s; break; }
         }
         float px = meters * UNITS_PER_METER * zoom;
         if (px > getWidth() * 0.5f) return;
         float x0 = right - px;
         Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
-        ln.setColor(Color.argb(210, 255, 255, 255));
-        ln.setStrokeWidth(2f);
+        ln.setColor(Color.argb(220, 255, 255, 255));
+        ln.setStrokeWidth(1.8f * dp);
         canvas.drawLine(x0, y, right, y, ln);
-        canvas.drawLine(x0, y-5, x0, y+5, ln);
-        canvas.drawLine(right, y-5, right, y+5, ln);
+        canvas.drawLine(x0, y-4*dp, x0, y+4*dp, ln);
+        canvas.drawLine(right, y-4*dp, right, y+4*dp, ln);
         Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
-        txt.setColor(Color.argb(210, 255, 255, 255));
-        txt.setTextSize(11f); txt.setTextAlign(Paint.Align.CENTER);
+        txt.setColor(Color.argb(220, 255, 255, 255));
+        txt.setTextSize(11f * dp); txt.setTextAlign(Paint.Align.CENTER);
         String lbl = (meters == Math.floor(meters))
                 ? (int) meters + " m" : meters + " m";
-        canvas.drawText(lbl, (x0 + right) / 2f, y - 8, txt);
+        canvas.drawText(lbl, (x0 + right) / 2f, y - 7*dp, txt);
     }
 
     private void drawRoamingMarkers(Canvas canvas) {
@@ -952,7 +973,7 @@ public class WifiHeatmapView extends android.view.View {
             if (ri >= points.size()) continue;
             ScanPoint p = points.get(ri);
             float sx = toSX(p.x), sy = toSY(p.y);
-            if (Math.hypot(tx - sx, ty - sy) > 48) continue;
+            if (Math.hypot(tx - sx, ty - sy) > 40 * dp) continue;
             String label = i < roamingLabels.size() && roamingLabels.get(i) != null
                     ? roamingLabels.get(i) : "Hand-off";
             String band = p.freqMhz >= 4900 ? "5 GHz" : p.freqMhz > 0 ? "2.4 GHz" : "?";
@@ -979,18 +1000,19 @@ public class WifiHeatmapView extends android.view.View {
     private void drawRoamLabel(Canvas canvas, float sx, float sy, String label) {
         String text = "⇄ " + label;
         Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
-        lbl.setTextSize(17f); lbl.setTextAlign(Paint.Align.CENTER);
+        lbl.setTextSize(13f * dp); lbl.setTextAlign(Paint.Align.CENTER);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
-        float tw = lbl.measureText(text), ly = sy + 44;
+        float tw = lbl.measureText(text), ly = sy + 34 * dp;
+        RectF chip = new RectF(sx-tw/2-8*dp, ly, sx+tw/2+8*dp, ly+22*dp);
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
         bg.setColor(Color.argb(235, 40, 30, 8));
-        canvas.drawRoundRect(new RectF(sx-tw/2-11, ly, sx+tw/2+11, ly+29), 8, 8, bg);
+        canvas.drawRoundRect(chip, 6*dp, 6*dp, bg);
         Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
-        edge.setStyle(Paint.Style.STROKE); edge.setStrokeWidth(1.8f);
+        edge.setStyle(Paint.Style.STROKE); edge.setStrokeWidth(1.5f * dp);
         edge.setColor(Color.argb(200, 255, 200, 80));
-        canvas.drawRoundRect(new RectF(sx-tw/2-11, ly, sx+tw/2+11, ly+29), 8, 8, edge);
+        canvas.drawRoundRect(chip, 6*dp, 6*dp, edge);
         lbl.setColor(Color.argb(252, 255, 220, 130));
-        canvas.drawText(text, sx, ly + 21, lbl);
+        canvas.drawText(text, sx, ly + 16 * dp, lbl);
     }
 
     private void drawFlashRing(Canvas canvas, float sx, float sy) {
@@ -999,45 +1021,45 @@ public class WifiHeatmapView extends android.view.View {
         // soft amber fill so the spot stands out on the heat layer
         r.setStyle(Paint.Style.FILL);
         r.setColor(Color.argb(40,255,200,50));
-        canvas.drawCircle(sx,sy,30+p*10,r);
+        canvas.drawCircle(sx,sy,(24+p*8)*dp,r);
         r.setStyle(Paint.Style.STROKE);
-        r.setStrokeWidth(3f+p*3f);
+        r.setStrokeWidth((2.5f+p*2.5f)*dp);
         r.setColor(Color.argb((int)(140+p*115),255,255,255));
-        canvas.drawCircle(sx,sy,34+p*22,r);
+        canvas.drawCircle(sx,sy,(27+p*16)*dp,r);
         r.setColor(Color.argb((int)(170+p*85),255,200,50));
-        r.setStrokeWidth(2.5f);
-        canvas.drawCircle(sx,sy,20+p*8,r);
+        r.setStrokeWidth(2f*dp);
+        canvas.drawCircle(sx,sy,(16+p*6)*dp,r);
     }
 
     private void drawLightning(Canvas canvas, float sx, float sy) {
         Paint t=new Paint(Paint.ANTI_ALIAS_FLAG);
-        t.setTextAlign(Paint.Align.CENTER); t.setTextSize(30f); t.setColor(0xFFFFD600);
-        canvas.drawText("⚡",sx,sy-34,t);
+        t.setTextAlign(Paint.Align.CENTER); t.setTextSize(22f*dp); t.setColor(0xFFFFD600);
+        canvas.drawText("⚡",sx,sy-26*dp,t);
         Paint g=new Paint(Paint.ANTI_ALIAS_FLAG); g.setStyle(Paint.Style.FILL);
-        g.setColor(Color.argb(45,255,214,0)); canvas.drawCircle(sx,sy,30,g);
+        g.setColor(Color.argb(45,255,214,0)); canvas.drawCircle(sx,sy,23*dp,g);
         g.setStyle(Paint.Style.STROKE); g.setColor(Color.argb(170,255,214,0));
-        g.setStrokeWidth(2.5f); canvas.drawCircle(sx,sy,30,g);
+        g.setStrokeWidth(2f*dp); canvas.drawCircle(sx,sy,23*dp,g);
     }
 
     private void drawBanner(Canvas canvas, float sx, float sy) {
-        Paint dp=new Paint(Paint.ANTI_ALIAS_FLAG);
-        dp.setStyle(Paint.Style.STROKE); dp.setStrokeWidth(1.5f);
-        dp.setColor(Color.argb(100,255,255,255));
-        dp.setPathEffect(new DashPathEffect(new float[]{8,5},0));
-        canvas.drawLine(sx,0,sx,getHeight(),dp);
+        Paint dash=new Paint(Paint.ANTI_ALIAS_FLAG);
+        dash.setStyle(Paint.Style.STROKE); dash.setStrokeWidth(1.5f*dp);
+        dash.setColor(Color.argb(100,255,255,255));
+        dash.setPathEffect(new DashPathEffect(new float[]{8*dp,5*dp},0));
+        canvas.drawLine(sx,0,sx,getHeight(),dash);
         Paint bg=new Paint(Paint.ANTI_ALIAS_FLAG); bg.setColor(Color.argb(210,20,30,50));
-        canvas.drawRoundRect(new RectF(sx-38,10,sx+38,30),5,5,bg);
+        canvas.drawRoundRect(new RectF(sx-40*dp,8*dp,sx+40*dp,28*dp),5*dp,5*dp,bg);
         Paint lt=new Paint(Paint.ANTI_ALIAS_FLAG); lt.setColor(Color.argb(230,255,255,255));
-        lt.setTextSize(11f); lt.setTextAlign(Paint.Align.CENTER);
+        lt.setTextSize(11f*dp); lt.setTextAlign(Paint.Align.CENTER);
         lt.setTypeface(Typeface.DEFAULT_BOLD);
-        canvas.drawText("ROAMING",sx,24,lt);
+        canvas.drawText("ROAMING",sx,22*dp,lt);
     }
 
     private void drawColorSplitMark(Canvas canvas, float sx, float sy) {
         Paint cp=new Paint(Paint.ANTI_ALIAS_FLAG); cp.setStyle(Paint.Style.FILL);
-        cp.setColor(Color.argb(55,140,80,255)); canvas.drawCircle(sx,sy,36,cp);
+        cp.setColor(Color.argb(55,140,80,255)); canvas.drawCircle(sx,sy,26*dp,cp);
         cp.setStyle(Paint.Style.STROKE); cp.setColor(Color.argb(200,160,100,255));
-        cp.setStrokeWidth(3f); canvas.drawCircle(sx,sy,36,cp);
+        cp.setStrokeWidth(2.2f*dp); canvas.drawCircle(sx,sy,26*dp,cp);
     }
 
     private void drawMarkers(Canvas canvas) {
@@ -1053,8 +1075,8 @@ public class WifiHeatmapView extends android.view.View {
         bg.setColor(Color.argb(210,10,15,25));
         lbl.setColor(Color.WHITE); lbl.setTextAlign(Paint.Align.CENTER);
         lbl.setAntiAlias(true);
-        float r=Math.max(16f,20f*zoom);
-        ico.setTextSize(r*0.9f); lbl.setTextSize(Math.max(11f,12f*zoom));
+        float r=Math.max(14f*dp,20f*zoom);
+        ico.setTextSize(r*0.9f); lbl.setTextSize(Math.max(10f*dp,12f*zoom));
         for (MapMarker m : markers) {
             float sx=toSX(m.worldX), sy=toSY(m.worldY);
             circ.setColor(m.iconColor()); canvas.drawCircle(sx,sy,r,circ);
@@ -1075,7 +1097,7 @@ public class WifiHeatmapView extends android.view.View {
 
     private void drawMiniMap(Canvas canvas) {
         if (points.size()<2) return;
-        float mW=110,mH=80,mX=getWidth()-mW-10,mY=10;
+        float mW=110*dp,mH=80*dp,mX=getWidth()-mW-10*dp,mY=10*dp;
         canvas.drawRoundRect(new RectF(mX,mY,mX+mW,mY+mH),8,8,miniPaint);
         float minX=WORLD_ORIGIN,maxX=WORLD_ORIGIN,minY=WORLD_ORIGIN,maxY=WORLD_ORIGIN;
         for(ScanPoint p:points){minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);}
@@ -1142,8 +1164,8 @@ public class WifiHeatmapView extends android.view.View {
         drawRoamingMarkers(c);
         drawMarkers(c);
         drawSuggestion(c);
-        drawSignalLegend(c, 16f, 42f, 170f);
-        drawScaleBar(c, bW - 24f, 42f);
+        drawSignalLegend(c, 16f*dp, 42f*dp, 150f*dp);
+        drawScaleBar(c, bW - 20f*dp, 42f*dp);
         drawExportLegend(c,bW,bH);
         drawWatermark(c,bW,bH,watermarkText);
 

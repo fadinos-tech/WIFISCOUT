@@ -272,6 +272,9 @@ public class MainActivity extends AppCompatActivity {
 
         btnStartStop.setOnClickListener(v -> toggleScanning());
 
+        // Tapping the empty map starts the scan too — STOP stays on the button only
+        heatmapView.setOnStartTapListener(() -> { if (!isScanning) toggleScanning(); });
+
         findViewById(R.id.btnClear).setOnClickListener(v -> {
             heatmapView.clearTrail();
             stepCount = 0; noMoveCount = 0; scanLog.setLength(0);
@@ -725,7 +728,8 @@ public class MainActivity extends AppCompatActivity {
         }
         SimpleDateFormat sdf = new SimpleDateFormat("dd/MM HH:mm", Locale.getDefault());
         EditText et = new EditText(this);
-        et.setText((currentSsid.isEmpty() ? "Scan" : currentSsid) + " " + sdf.format(new Date()));
+        // name only — the list shows date/time on its own, avoid duplication
+        et.setText(currentSsid.isEmpty() ? "Scan" : currentSsid);
         et.setSelectAllOnFocus(true);
         new AlertDialog.Builder(this)
                 .setTitle("Save scan")
@@ -760,12 +764,13 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "No saved scans yet — use Save after a scan.", Toast.LENGTH_LONG).show();
             return;
         }
-        SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault());
+        SimpleDateFormat sdf = new SimpleDateFormat("dd/MM HH:mm", Locale.getDefault());
         String[] items = new String[all.size()];
         for (int i = 0; i < all.size(); i++) {
             ScanRecord r = all.get(i);
-            items[i] = r.name + "\n" + sdf.format(new Date(r.timestamp))
-                    + "  ·  " + r.points.size() + " points";
+            // one clear line per scan: number, name, date, size
+            items[i] = (i + 1) + ".  " + r.name + "  —  " + sdf.format(new Date(r.timestamp))
+                    + "  ·  " + r.points.size() + " pts";
         }
         new AlertDialog.Builder(this)
                 .setTitle("Saved scans (" + all.size() + "/" + ScanStorage.MAX_SCANS + ")")
