@@ -33,7 +33,7 @@
                         android:text="WiFi Scout" android:textColor="@color/text_primary"
                         android:textSize="20sp" android:textStyle="bold" />
                     <TextView android:id="@+id/tvVersion" android:layout_width="wrap_content"
-                        android:layout_height="wrap_content" android:text="Click Solutions v1.0.0"
+                        android:layout_height="wrap_content" android:text="Click Solutions"
                         android:textColor="@color/text_secondary" android:textSize="10sp" />
                 </LinearLayout>
             </LinearLayout>
@@ -179,7 +179,7 @@
                 android:text="WiFi Scout" android:textColor="@color/text_primary"
                 android:textSize="20sp" android:textStyle="bold" />
             <TextView android:id="@+id/tvDrawerVersion" android:layout_width="wrap_content"
-                android:layout_height="wrap_content" android:text="Click Solutions v1.0.0"
+                android:layout_height="wrap_content" android:text="Click Solutions"
                 android:textColor="@color/text_secondary" android:textSize="11sp" />
         </LinearLayout>
 
@@ -275,7 +275,7 @@
                 android:layout_weight="1" android:text="License"
                 android:textColor="@color/text_primary" android:textSize="13sp" />
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="›" android:textColor="@color/text_secondary" android:textSize="18sp" />
+                android:text="â€º" android:textColor="@color/text_secondary" android:textSize="18sp" />
         </LinearLayout>
 
     </LinearLayout>
