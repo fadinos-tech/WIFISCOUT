@@ -371,9 +371,38 @@ public class MainActivity extends AppCompatActivity {
         if (heatmapView.getPointCount() > 0) {
             btnShare.setEnabled(true);
             btnSave.setEnabled(true);
-            saveToGallery();  // image auto-saved to gallery; Save = keep the session
+            if (silent) {
+                saveToGallery();
+            } else {
+                // Ask BEFORE saving the image — loop closure changes the map
+                askLoopClosure();
+            }
+        } else if (!silent) {
+            showStopReport();
         }
-        if (!silent) showStopReport();
+    }
+
+    /**
+     * Ending where you started lets us cancel the accumulated step drift
+     * (the gap between the end point and the router is pure error).
+     */
+    private void askLoopClosure() {
+        if (isFinishing() || isDestroyed()) { saveToGallery(); return; }
+        new AlertDialog.Builder(this)
+                .setTitle("Align map")
+                .setMessage("Did you finish the walk at the same spot where you started (near the router)?")
+                .setCancelable(false)
+                .setPositiveButton("Yes — align", (d, w) -> {
+                    heatmapView.applyLoopClosure();
+                    runEndOfScanDiagnostics();   // distances changed — recompute verdicts
+                    saveToGallery();
+                    showStopReport();
+                })
+                .setNegativeButton("No", (d, w) -> {
+                    saveToGallery();
+                    showStopReport();
+                })
+                .show();
     }
 
     private void showStopReport() {

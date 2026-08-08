@@ -311,6 +311,46 @@ public class WifiHeatmapView extends android.view.View {
         applyMode(); invalidate();
     }
 
+    /**
+     * Loop closure: the user confirmed the walk ended where it started.
+     * The end-to-origin gap is pure accumulated drift — distribute the
+     * correction linearly along the path, then rebuild everything.
+     */
+    public void applyLoopClosure() {
+        int n = points.size();
+        if (n < 8) return;
+        ScanPoint last = points.get(n - 1);
+        float ex = last.x - WORLD_ORIGIN, ey = last.y - WORLD_ORIGIN;
+        if (Math.hypot(ex, ey) < 30) { return; }   // already closed — nothing to fix
+        List<ScanPoint> old = new ArrayList<>(points);
+        points.clear();
+        for (int i = 0; i < n; i++) {
+            ScanPoint p = old.get(i);
+            float f = (i + 1) / (float) n;         // drift grows with walked distance
+            int nx = Math.round(p.x - ex * f), ny = Math.round(p.y - ey * f);
+            nx = (int) Math.max(50, Math.min(WORLD_SIZE - 50, nx));
+            ny = (int) Math.max(50, Math.min(WORLD_SIZE - 50, ny));
+            points.add(new ScanPoint(nx, ny, p.color, p.signalLevel, p.rssi, p.ssid,
+                    p.freqMhz, p.linkMbps, p.rttMs, p.interference, p.timestamp));
+        }
+        // markers move with the correction of their nearest path point
+        for (MapMarker m : markers) {
+            int best = 0; float bd = Float.MAX_VALUE;
+            for (int i = 0; i < n; i++) {
+                float dx = old.get(i).x - m.worldX, dy = old.get(i).y - m.worldY;
+                float d = dx*dx + dy*dy;
+                if (d < bd) { bd = d; best = i; }
+            }
+            float f = (best + 1) / (float) n;
+            m.worldX -= ex * f; m.worldY -= ey * f;
+        }
+        clearHeatField();
+        for (ScanPoint p : points) addHeatSample(p.x, p.y, p.rssi);
+        worldX = points.get(n - 1).x; worldY = points.get(n - 1).y;
+        computeExtenderSuggestion();
+        applyMode(); invalidate();
+    }
+
     public void resetOrigin() {
         worldX = WORLD_ORIGIN; worldY = WORLD_ORIGIN;
         started = false; scanning = true;
