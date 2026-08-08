@@ -747,7 +747,19 @@ public class MainActivity extends AppCompatActivity {
 
     /** Puts a saved scan back on the map so Share/CSV/inspection work on it. */
     private void loadRecord(ScanRecord r) {
-        heatmapView.loadScan(r.points, r.roamIndices, r.roamLabels, r.markers);
+        try {
+            heatmapView.loadScan(r.points, r.roamIndices, r.roamLabels, r.markers);
+        } catch (Exception e) {
+            // corrupt saved data must never crash the app — offer cleanup instead
+            heatmapView.clearTrail();
+            new AlertDialog.Builder(this)
+                    .setTitle("Can't load this scan")
+                    .setMessage("The saved data looks corrupt (" + e.getClass().getSimpleName()
+                            + "). Delete it?")
+                    .setPositiveButton("Delete", (d, w) -> scanStorage.delete(r.id))
+                    .setNegativeButton("Keep", null).show();
+            return;
+        }
         currentSsid  = r.ssid;
         currentBssid = r.bssid;
         diagnostics  = r.diagnostics;

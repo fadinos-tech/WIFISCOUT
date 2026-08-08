@@ -34,7 +34,8 @@ public class WifiHeatmapView extends android.view.View {
     public enum MapMode   { AUTO_FIT, AUTO_CENTER, FREE_SCROLL }
     public enum RoamStyle { FLASH_RING, LIGHTNING, BANNER, COLOR_SPLIT }
 
-    private static final float WORLD_SIZE   = 3000f;
+    // ±42 m from the start point — long walks + step drift stay inside
+    private static final float WORLD_SIZE   = 6000f;
     private static final float WORLD_ORIGIN = WORLD_SIZE / 2f;
 
     // ── Heat field (IDW grid) ────────────────────────────────────
@@ -218,7 +219,10 @@ public class WifiHeatmapView extends android.view.View {
     }
 
     public void updatePosition(float wx, float wy) {
-        worldX = wx; worldY = wy; started = true; applyMode(); invalidate();
+        // never let the position leave the world grid
+        worldX = Math.max(50f, Math.min(WORLD_SIZE - 50f, wx));
+        worldY = Math.max(50f, Math.min(WORLD_SIZE - 50f, wy));
+        started = true; applyMode(); invalidate();
     }
 
     public void setHeadingDeg(float deg) { headingDeg = deg; if (scanning) invalidate(); }
@@ -332,6 +336,7 @@ public class WifiHeatmapView extends android.view.View {
         int cx = (int) (wx / CELL), cy = (int) (wy / CELL);
         int x0 = Math.max(0, cx - cellR), x1 = Math.min(GRID_N - 1, cx + cellR);
         int y0 = Math.max(0, cy - cellR), y1 = Math.min(GRID_N - 1, cy + cellR);
+        if (x0 > x1 || y0 > y1) return;  // point outside the grid — setPixels would crash
         float r2 = HEAT_RADIUS * HEAT_RADIUS;
         for (int gy = y0; gy <= y1; gy++) {
             float dy = (gy + 0.5f) * CELL - wy;
