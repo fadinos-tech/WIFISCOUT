@@ -51,16 +51,16 @@ public class MainActivity extends AppCompatActivity {
     private static final int  PERM_LOCATION     = 100;
     private static final int  PERM_ACTIVITY     = 101;
     private static final int  PERM_NOTIF        = 102;
-    private static final int  NO_MOVE_WARN      = 3;
-    private static final int  NO_MOVE_STOP      = 10;
+    private static final int  DEFAULT_NO_MOVE   = 15;   // seconds without steps before asking
     private static final int  DEFAULT_THRESHOLD = 20;
     private static final String PREF_THRESHOLD  = "red_threshold";
+    private static final String PREF_NO_MOVE    = "no_move_timeout";
 
     private WifiHeatmapView heatmapView;
     private Button          btnStartStop, btnSave, btnShare, btnMark, btnMenu, btnExportCsv;
     private TextView        tvSsid, tvSignalStrength, tvSignalQuality;
-    private TextView        tvPointCount, tvStatus, tvVersion, tvDrawerVersion, tvThresholdValue;
-    private SeekBar         seekThreshold;
+    private TextView        tvPointCount, tvStatus, tvVersion, tvDrawerVersion, tvThresholdValue, tvNoMoveValue;
+    private SeekBar         seekThreshold, seekNoMove;
     private RadioGroup      rgMapMode, rgRoamStyle;
     private DrawerLayout    drawerLayout;
 
@@ -75,6 +75,7 @@ public class MainActivity extends AppCompatActivity {
     private String          currentBssid  = "";
     private String          lastBssid     = "";
     private int             redThreshold  = DEFAULT_THRESHOLD;
+    private int             noMoveTimeout = DEFAULT_NO_MOVE;
     private long            stickyStatusUntil = 0;  // keep roaming message visible
     private boolean         noMoveDialogShowing = false;
     private AlertDialog     noMoveDialog;
@@ -150,13 +151,15 @@ public class MainActivity extends AppCompatActivity {
     // ── Prefs ────────────────────────────────────────────────────
 
     private void loadPrefs() {
-        redThreshold = getSharedPreferences("wifi_scout_settings", MODE_PRIVATE)
-                .getInt(PREF_THRESHOLD, DEFAULT_THRESHOLD);
+        SharedPreferences sp = getSharedPreferences("wifi_scout_settings", MODE_PRIVATE);
+        redThreshold  = sp.getInt(PREF_THRESHOLD, DEFAULT_THRESHOLD);
+        noMoveTimeout = sp.getInt(PREF_NO_MOVE, DEFAULT_NO_MOVE);
     }
 
     private void savePrefs() {
         getSharedPreferences("wifi_scout_settings", MODE_PRIVATE)
-                .edit().putInt(PREF_THRESHOLD, redThreshold).apply();
+                .edit().putInt(PREF_THRESHOLD, redThreshold)
+                .putInt(PREF_NO_MOVE, noMoveTimeout).apply();
     }
 
     // ── Init ─────────────────────────────────────────────────────
@@ -205,6 +208,18 @@ public class MainActivity extends AppCompatActivity {
         seekThreshold.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar s, int p, boolean u) {
                 redThreshold = p; tvThresholdValue.setText(p + "%"); savePrefs();
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {}
+        });
+
+        tvNoMoveValue = findViewById(R.id.tvNoMoveValue);
+        seekNoMove    = findViewById(R.id.seekNoMove);
+        seekNoMove.setProgress(noMoveTimeout);
+        tvNoMoveValue.setText(noMoveTimeout + "s");
+        seekNoMove.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean u) {
+                noMoveTimeout = p; tvNoMoveValue.setText(p + "s"); savePrefs();
             }
             @Override public void onStartTrackingTouch(SeekBar s) {}
             @Override public void onStopTrackingTouch(SeekBar s) {}
@@ -264,7 +279,15 @@ public class MainActivity extends AppCompatActivity {
     private void toggleScanning() {
         if (!hasLocationPermission()) { requestLocationPermission(); return; }
         if (!hasActivityPermission()) { requestActivityPermission(); return; }
-        if (isScanning) { stopScanning(false); return; }
+        if (isScanning) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Stop scanning?")
+                    .setMessage("Did you scan the whole house?")
+                    .setPositiveButton("Yes, stop", (d, w) -> stopScanning(false))
+                    .setNegativeButton("No, continue", null)
+                    .show();
+            return;
+        }
 
         if (!isWifiConnected()) {
             new AlertDialog.Builder(this)
@@ -400,9 +423,10 @@ public class MainActivity extends AppCompatActivity {
         if (noMoveDialogShowing) { lastStepAtScan = stepCount; return; }
         if (stepCount == lastStepAtScan) {
             noMoveCount++;
-            if (noMoveCount >= NO_MOVE_STOP) { showNoMoveDialog(); return; }
-            if (noMoveCount >= NO_MOVE_WARN)
-                setStatus("No movement detected — keep walking! (" + (NO_MOVE_STOP-noMoveCount) + ")");
+            if (noMoveCount >= noMoveTimeout) { showNoMoveDialog(); return; }
+            int warnAt = Math.max(3, noMoveTimeout - 7);  // warn ~7s before asking
+            if (noMoveCount >= warnAt)
+                setStatus("No movement detected — keep walking! (" + (noMoveTimeout-noMoveCount) + ")");
         } else { noMoveCount = 0; setStatus(""); }
         lastStepAtScan = stepCount;
     }
