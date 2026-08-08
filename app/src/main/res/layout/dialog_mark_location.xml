@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp"
+    android:background="@color/header_bg">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Mark Location"
+        android:textColor="@color/text_primary"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Grid of preset location types -->
+    <GridLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:columnCount="3"
+        android:rowCount="4"
+        android:layout_marginBottom="16dp">
+
+        <Button android:id="@+id/btnRouter"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Router" android:textSize="12sp"
+            android:backgroundTint="#1565C0" android:textColor="@android:color/white"/>
+
+        <Button android:id="@+id/btnExtender"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Extender" android:textSize="12sp"
+            android:backgroundTint="#6A1B9A" android:textColor="@android:color/white"/>
+
+        <Button android:id="@+id/btnKitchen"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Kitchen" android:textSize="12sp"
+            android:backgroundTint="#2E7D32" android:textColor="@android:color/white"/>
+
+        <Button android:id="@+id/btnLivingRoom"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Living Room" android:textSize="11sp"
+            android:backgroundTint="#00838F" android:textColor="@android:color/white"/>
+
+        <Button android:id="@+id/btnBedroom"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Bedroom" android:textSize="12sp"
+            android:backgroundTint="#4527A0" android:textColor="@android:color/white"/>
+
+        <Button android:id="@+id/btnBathroom"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Bathroom" android:textSize="12sp"
+            android:backgroundTint="#0277BD" android:textColor="@android:color/white"/>
+
+        <Button android:id="@+id/btnHallway"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Hallway" android:textSize="12sp"
+            android:backgroundTint="#558B2F" android:textColor="@android:color/white"/>
+
+        <Button android:id="@+id/btnOffice"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Office" android:textSize="12sp"
+            android:backgroundTint="#6D4C41" android:textColor="@android:color/white"/>
+
+        <Button android:id="@+id/btnStairs"
+            android:layout_width="0dp" android:layout_columnWeight="1"
+            android:layout_height="44dp" android:layout_margin="3dp"
+            android:text="Stairs" android:textSize="12sp"
+            android:backgroundTint="#E65100" android:textColor="@android:color/white"/>
+
+    </GridLayout>
+
+    <!-- Custom label input -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Or type a custom label:"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        android:layout_marginBottom="6dp" />
+
+    <EditText
+        android:id="@+id/etCustomLabel"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:hint="e.g. Dad's room, Server rack..."
+        android:textColor="@color/text_primary"
+        android:textColorHint="@color/text_secondary"
+        android:background="@drawable/info_card_bg"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:textSize="13sp"
+        android:inputType="text"
+        android:layout_marginBottom="12dp" />
+
+    <Button
+        android:id="@+id/btnAddCustom"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:text="Add Custom Label"
+        android:backgroundTint="#30363D"
+        android:textColor="@android:color/white"
+        android:textSize="13sp" />
+
+</LinearLayout>

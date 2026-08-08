@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_dark">#0D1117</color>
+    <color name="header_bg">#161B22</color>
+    <color name="heatmap_bg">#0A0E14</color>
+    <color name="text_primary">#E6EDF3</color>
+    <color name="text_secondary">#8B949E</color>
+
+    <color name="start_green">#238636</color>
+    <color name="stop_red">#DA3633</color>
+    <color name="clear_btn">#30363D</color>
+
+    <color name="signal_excellent">#00E664</color>
+    <color name="signal_good">#82E600</color>
+    <color name="signal_medium">#FFB400</color>
+    <color name="signal_poor">#FF5000</color>
+    <color name="signal_bad">#C80000</color>
+
+    <!-- Material primary (required by theme) -->
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>
