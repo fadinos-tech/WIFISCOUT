@@ -539,6 +539,7 @@ public class WifiHeatmapView extends android.view.View {
             drawContour(canvas);
             drawWalkPath(canvas);
             drawSampleDots(canvas);
+            drawStartMarker(canvas);
             drawRoamingMarkers(canvas);
             drawMarkers(canvas);
             drawSuggestion(canvas);
@@ -585,6 +586,36 @@ public class WifiHeatmapView extends android.view.View {
             dotRimPaint.setColor(AP_RIM_COLORS[Math.min(apIndexForPoint(i), AP_RIM_COLORS.length - 1)]);
             canvas.drawCircle(sx, sy, pr, dotRimPaint);
         }
+    }
+
+    /** Fixed marker at the scan origin — the user starts 1 m from the router. */
+    private void drawStartMarker(Canvas canvas) {
+        float sx = toSX(WORLD_ORIGIN), sy = toSY(WORLD_ORIGIN);
+        Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
+        halo.setColor(Color.argb(60, 21, 101, 192));
+        canvas.drawCircle(sx, sy, 26f, halo);
+        Paint body = new Paint(Paint.ANTI_ALIAS_FLAG);
+        body.setColor(Color.rgb(21, 101, 192));
+        canvas.drawCircle(sx, sy, 17f, body);
+        Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ring.setStyle(Paint.Style.STROKE); ring.setStrokeWidth(2.5f);
+        ring.setColor(Color.WHITE);
+        canvas.drawCircle(sx, sy, 17f, ring);
+        Paint ico = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ico.setColor(Color.WHITE); ico.setTextAlign(Paint.Align.CENTER);
+        ico.setTextSize(17f); ico.setTypeface(Typeface.DEFAULT_BOLD);
+        canvas.drawText("R", sx, sy + 6f, ico);
+
+        String label = "Router / Start";
+        Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
+        lbl.setTextSize(12f); lbl.setTextAlign(Paint.Align.CENTER);
+        lbl.setTypeface(Typeface.DEFAULT_BOLD);
+        float tw = lbl.measureText(label), ly = sy + 24f;
+        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bg.setColor(Color.argb(220, 8, 25, 50));
+        canvas.drawRoundRect(new RectF(sx-tw/2-7, ly, sx+tw/2+7, ly+20), 6, 6, bg);
+        lbl.setColor(Color.argb(240, 160, 205, 255));
+        canvas.drawText(label, sx, ly + 14.5f, lbl);
     }
 
     /** Google-Maps-style position puck: heading cone + blue dot with white ring. */
@@ -844,6 +875,7 @@ public class WifiHeatmapView extends android.view.View {
         drawContour(c);
         drawWalkPath(c);
         drawSampleDots(c);
+        drawStartMarker(c);
         drawRoamingMarkers(c);
         drawMarkers(c);
         drawSuggestion(c);

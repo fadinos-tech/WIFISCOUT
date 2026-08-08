@@ -81,6 +81,9 @@ public class MainActivity extends AppCompatActivity {
     private AlertDialog     noMoveDialog;
     private android.widget.ProgressBar scanSpinner;
 
+    // Every distinct BSSID seen this scan, in order of appearance: index 0 = "AP 1" (router)
+    private final List<String> seenBssids = new ArrayList<>();
+
     private final StringBuilder scanLog = new StringBuilder();
 
     private final ServiceConnection serviceConnection = new ServiceConnection() {
@@ -307,6 +310,7 @@ public class MainActivity extends AppCompatActivity {
     private void startScanning() {
         isScanning = true; stepCount = 0; noMoveCount = 0;
         lastStepAtScan = -1; currentSsid = ""; currentBssid = ""; lastBssid = "";
+        seenBssids.clear();
         scanLog.setLength(0);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         btnStartStop.setText("STOP");
@@ -335,6 +339,7 @@ public class MainActivity extends AppCompatActivity {
         btnStartStop.setBackgroundTintList(ContextCompat.getColorStateList(this, R.color.start_green));
         btnMark.setEnabled(false);
         if (scanSpinner != null) scanSpinner.setVisibility(View.GONE);
+        stickyStatusUntil = 0; setStatus("");   // clear leftover "keep walking" banner
         heatmapView.setScanning(false);
         stepNavigator.stop();
         // Shut the service down completely so its notification disappears immediately
@@ -381,6 +386,7 @@ public class MainActivity extends AppCompatActivity {
         String bssid = getBssid();
         if (currentSsid.isEmpty() && !ssid.equals("<unknown ssid>")) {
             currentSsid = ssid; currentBssid = bssid; lastBssid = bssid;
+            if (!bssid.equals("N/A") && !bssid.equals("<none>")) apName(bssid); // router = AP 1
         }
         if (!lastBssid.isEmpty() && !bssid.equals(lastBssid)
                 && !bssid.equals("N/A") && !bssid.equals("<none>")) {
@@ -401,10 +407,17 @@ public class MainActivity extends AppCompatActivity {
         updatePointCount();
     }
 
+    /** Friendly sequential name for a BSSID: "AP 1" = router, "AP 2" = first extender... */
+    private String apName(String bssid) {
+        int idx = seenBssids.indexOf(bssid);
+        if (idx < 0) { seenBssids.add(bssid); idx = seenBssids.size() - 1; }
+        return "AP " + (idx + 1);
+    }
+
     /** Real-time indication when the phone roams to another AP (extender) on the same SSID. */
     private void onRoamingDetected(String oldBssid, String newBssid) {
-        String apTag = newBssid.length() >= 5
-                ? newBssid.substring(newBssid.length() - 5) : newBssid;
+        apName(oldBssid);              // make sure the origin AP is registered first
+        String apTag = apName(newBssid);
         heatmapView.markRoaming(apTag);
         // Vibrate so the user feels the hand-off while walking
         try {
@@ -415,8 +428,12 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
         // Sticky banner for 4 seconds (step updates won't wipe it)
         stickyStatusUntil = System.currentTimeMillis() + 4000;
-        setStatus("⇄ Roaming: moved to AP …" + apTag);
-        Toast.makeText(this, "Roaming detected → " + apTag, Toast.LENGTH_SHORT).show();
+        setStatus("⇄ Roaming → " + apTag + "  (" + shortBssid(newBssid) + ")");
+        Toast.makeText(this, "Roaming → " + apTag, Toast.LENGTH_SHORT).show();
+    }
+
+    private String shortBssid(String b) {
+        return b.length() >= 5 ? b.substring(b.length() - 5) : b;
     }
 
     private void checkNoMove() {
@@ -594,7 +611,7 @@ public class MainActivity extends AppCompatActivity {
             String tag = (r < roamLbl.size() && roamLbl.get(r) != null) ? roamLbl.get(r) : "?";
             roams.append("  #").append(r+1)
                  .append("  at point ").append(roamIdx.get(r)+1)
-                 .append("  -> AP ...").append(tag).append("\n");
+                 .append("  -> ").append(tag).append("\n");
         }
         return "WiFi Scout Scan Report\n======================\n"
                 +"Date:    "+sdf.format(new Date())+"\n"
