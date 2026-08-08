@@ -101,6 +101,7 @@ public class MainActivity extends AppCompatActivity {
             stepCount++;
             noMoveCount = 0;
             setStatus("");
+            heatmapView.setHeadingDeg(stepNavigator.getAzimuthDeg());
             heatmapView.updatePosition(x, y);
             log("Step #" + stepCount + "  X=" + (int)x + "  Y=" + (int)y
                     + "  heading=" + stepNavigator.getAzimuthDeg() + "deg");
@@ -342,6 +343,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void onNewScanResult(int rssi, int signalLevel, String ssid) {
         if (!isScanning) return;
+        heatmapView.setHeadingDeg(stepNavigator.getAzimuthDeg());
         String bssid = getBssid();
         if (currentSsid.isEmpty() && !ssid.equals("<unknown ssid>")) {
             currentSsid = ssid; currentBssid = bssid; lastBssid = bssid;

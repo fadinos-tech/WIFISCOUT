@@ -6,10 +6,13 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
+import android.graphics.LinearGradient;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RadialGradient;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.util.AttributeSet;
 import android.view.GestureDetector;
@@ -45,6 +48,8 @@ public class WifiHeatmapView extends android.view.View {
     private static final float FIT_PAD     = 140f;   // world padding for auto-fit
     private static final float MIN_MOVE_PX = 15f;
     private static final float WEAK_RSSI   = -72f;   // "weak" threshold for extender suggestion
+    private static final float CONTOUR_RSSI = -70f;  // weak-zone contour line level
+    private static final float UNITS_PER_METER = 71f; // one step = 50 units ≈ 0.7 m
 
     private final float[] sumW  = new float[GRID_N * GRID_N];
     private final float[] sumWV = new float[GRID_N * GRID_N];
@@ -67,7 +72,6 @@ public class WifiHeatmapView extends android.view.View {
     private final Paint dotRimPaint  = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint gridPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint hintPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint crossPaint   = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint miniPaint    = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint miniDotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path  walkPath     = new Path();
@@ -80,6 +84,29 @@ public class WifiHeatmapView extends android.view.View {
     // Extender suggestion (weakest cluster centroid), NaN = none
     private float suggestX = Float.NaN;
     private float suggestY = Float.NaN;
+
+    // Heading of the phone (degrees, 0 = up/north on the map), NaN = unknown
+    private float headingDeg = Float.NaN;
+
+    // Weak-zone contour (marching squares), cached in world coords
+    private final Path contourPath   = new Path();
+    private final Path contourScreen = new Path();
+    private final Matrix contourMatrix = new Matrix();
+    private final Paint contourPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private boolean contourDirty = false;
+
+    // Pulse animation for the newest sample dot
+    private float lastDotScale = 1f;
+    private ValueAnimator dotAnimator;
+
+    // Distinct rim color per AP segment (between roam events)
+    private static final int[] AP_RIM_COLORS = {
+            Color.argb(220, 255, 255, 255),  // AP 0 — white
+            Color.argb(220, 64, 196, 255),   // AP 1 — cyan
+            Color.argb(220, 255, 128, 171),  // AP 2 — pink
+            Color.argb(220, 255, 215, 64),   // AP 3 — amber
+            Color.argb(220, 179, 136, 255)   // AP 4+ — purple
+    };
 
     private float panX = 0f, panY = 0f, zoom = 1.0f;
 
@@ -113,11 +140,6 @@ public class WifiHeatmapView extends android.view.View {
         gridPaint.setStrokeWidth(1f);
         gridPaint.setStyle(Paint.Style.STROKE);
 
-        crossPaint.setColor(Color.WHITE);
-        crossPaint.setStrokeWidth(2.5f);
-        crossPaint.setStyle(Paint.Style.STROKE);
-        crossPaint.setAlpha(230);
-
         hintPaint.setColor(Color.argb(60, 255, 255, 255));
         hintPaint.setTextSize(36f);
         hintPaint.setTextAlign(Paint.Align.CENTER);
@@ -127,6 +149,11 @@ public class WifiHeatmapView extends android.view.View {
         miniPaint.setStyle(Paint.Style.FILL);
 
         miniDotPaint.setAntiAlias(true);
+
+        contourPaint.setStyle(Paint.Style.STROKE);
+        contourPaint.setStrokeWidth(2.5f);
+        contourPaint.setColor(Color.argb(200, 255, 110, 60));
+        contourPaint.setPathEffect(new DashPathEffect(new float[]{9, 6}, 0));
 
         setupGestures();
     }
@@ -178,6 +205,8 @@ public class WifiHeatmapView extends android.view.View {
         worldX = wx; worldY = wy; started = true; applyMode(); invalidate();
     }
 
+    public void setHeadingDeg(float deg) { headingDeg = deg; if (scanning) invalidate(); }
+
     public void addPoint(int signalLevel, int rssi, String ssid) {
         if (!started) return;
         // Skip duplicate position — no movement
@@ -190,7 +219,16 @@ public class WifiHeatmapView extends android.view.View {
         points.add(new ScanPoint((int) worldX, (int) worldY,
                 colorForRssi(rssi, false), signalLevel, rssi, ssid));
         addHeatSample(worldX, worldY, rssi);
+        pulseNewDot();
         applyMode(); invalidate();
+    }
+
+    private void pulseNewDot() {
+        if (dotAnimator != null) dotAnimator.cancel();
+        dotAnimator = ValueAnimator.ofFloat(1.9f, 1f);
+        dotAnimator.setDuration(400);
+        dotAnimator.addUpdateListener(a -> { lastDotScale = (float) a.getAnimatedValue(); invalidate(); });
+        dotAnimator.start();
     }
 
     public void markRoaming() { markRoaming(null); }
@@ -242,6 +280,8 @@ public class WifiHeatmapView extends android.view.View {
         java.util.Arrays.fill(sumWV, 0f);
         java.util.Arrays.fill(gridPixels, 0);
         heatBitmap.eraseColor(Color.TRANSPARENT);
+        contourPath.rewind();
+        contourDirty = false;
     }
 
     /** Splat one RSSI sample into the grid with a smooth compact kernel. */
@@ -267,6 +307,65 @@ public class WifiHeatmapView extends android.view.View {
         }
         heatBitmap.setPixels(gridPixels, y0 * GRID_N + x0, GRID_N,
                 x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        contourDirty = true;
+    }
+
+    /**
+     * Marching squares over the IDW grid: builds the dashed contour line that
+     * outlines every zone weaker than CONTOUR_RSSI. Cached until data changes.
+     */
+    private void rebuildContour() {
+        contourDirty = false;
+        contourPath.rewind();
+        final float T = CONTOUR_RSSI;
+        for (int gy = 0; gy < GRID_N - 1; gy++) {
+            int row = gy * GRID_N;
+            for (int gx = 0; gx < GRID_N - 1; gx++) {
+                int i00 = row + gx, i10 = i00 + 1, i01 = i00 + GRID_N, i11 = i01 + 1;
+                if (sumW[i00] < W_MIN || sumW[i10] < W_MIN
+                        || sumW[i01] < W_MIN || sumW[i11] < W_MIN) continue;
+                float v00 = sumWV[i00]/sumW[i00], v10 = sumWV[i10]/sumW[i10];
+                float v01 = sumWV[i01]/sumW[i01], v11 = sumWV[i11]/sumW[i11];
+                int c = (v00 < T ? 1 : 0) | (v10 < T ? 2 : 0)
+                      | (v11 < T ? 4 : 0) | (v01 < T ? 8 : 0);
+                if (c == 0 || c == 15) continue;
+                float x0 = (gx + 0.5f) * CELL, y0c = (gy + 0.5f) * CELL;
+                float x1 = x0 + CELL, y1c = y0c + CELL;
+                // interpolated crossing on each square edge
+                float tx = x0 + CELL * frac(v00, v10, T);   // top edge
+                float bx = x0 + CELL * frac(v01, v11, T);   // bottom edge
+                float ly = y0c + CELL * frac(v00, v01, T);  // left edge
+                float ry = y0c + CELL * frac(v10, v11, T);  // right edge
+                switch (c) {
+                    case 1:  case 14: seg(x0, ly, tx, y0c);  break;
+                    case 2:  case 13: seg(tx, y0c, x1, ry);  break;
+                    case 4:  case 11: seg(x1, ry, bx, y1c);  break;
+                    case 8:  case 7:  seg(bx, y1c, x0, ly);  break;
+                    case 3:  case 12: seg(x0, ly, x1, ry);   break;
+                    case 6:  case 9:  seg(tx, y0c, bx, y1c); break;
+                    case 5:  seg(x0, ly, tx, y0c); seg(x1, ry, bx, y1c); break;
+                    case 10: seg(tx, y0c, x1, ry); seg(bx, y1c, x0, ly); break;
+                }
+            }
+        }
+    }
+
+    private static float frac(float a, float b, float t) {
+        return (Math.abs(b - a) < 1e-4f) ? 0.5f : Math.max(0f, Math.min(1f, (t - a) / (b - a)));
+    }
+
+    private void seg(float ax, float ay, float bx, float by) {
+        contourPath.moveTo(ax, ay); contourPath.lineTo(bx, by);
+    }
+
+    private void drawContour(Canvas canvas) {
+        if (contourDirty) rebuildContour();
+        if (contourPath.isEmpty()) return;
+        contourMatrix.reset();
+        contourMatrix.postScale(zoom, zoom);
+        contourMatrix.postTranslate(panX, panY);
+        contourPath.transform(contourMatrix, contourScreen);
+        canvas.drawPath(contourScreen, contourPaint);
     }
 
     private int cellColor(int idx) {
@@ -428,6 +527,7 @@ public class WifiHeatmapView extends android.view.View {
                     getWidth()/2f, getHeight()/2f, hintPaint);
         } else {
             drawHeatField(canvas);
+            drawContour(canvas);
             drawWalkPath(canvas);
             drawSampleDots(canvas);
             drawRoamingMarkers(canvas);
@@ -435,41 +535,126 @@ public class WifiHeatmapView extends android.view.View {
             drawSuggestion(canvas);
             if (scanning) drawCurrentPosition(canvas);
             if (mapMode == MapMode.FREE_SCROLL) drawMiniMap(canvas);
+            drawSignalLegend(canvas, 12f, getHeight() - 34f, 150f);
+            drawScaleBar(canvas, getWidth() - 24f, getHeight() - 22f);
         }
     }
 
-    /** Thin translucent polyline showing where the user walked. */
+    /** Smooth translucent walk path — quadratic curves through segment midpoints. */
     private void drawWalkPath(Canvas canvas) {
         if (points.size() < 2) return;
         walkPath.rewind();
-        walkPath.moveTo(toSX(points.get(0).x), toSY(points.get(0).y));
-        for (int i = 1; i < points.size(); i++)
-            walkPath.lineTo(toSX(points.get(i).x), toSY(points.get(i).y));
+        float px = toSX(points.get(0).x), py = toSY(points.get(0).y);
+        walkPath.moveTo(px, py);
+        for (int i = 1; i < points.size() - 1; i++) {
+            float cx = toSX(points.get(i).x),   cy = toSY(points.get(i).y);
+            float nx = toSX(points.get(i+1).x), ny = toSY(points.get(i+1).y);
+            walkPath.quadTo(cx, cy, (cx + nx) / 2f, (cy + ny) / 2f);
+        }
+        ScanPoint last = points.get(points.size() - 1);
+        walkPath.lineTo(toSX(last.x), toSY(last.y));
         pathPaint.setStrokeWidth(3f);
         canvas.drawPath(walkPath, pathPaint);
     }
 
-    /** Small colored dots at each measurement — screen-sized, never smeared. */
+    /** Index of the AP (roam segment) that served point i — 0 before the first roam. */
+    private int apIndexForPoint(int i) {
+        int n = 0;
+        for (int ri : roamingIndices) if (i > ri) n++;
+        return n;
+    }
+
+    /** Small colored dots at each measurement; rim color identifies the serving AP. */
     private void drawSampleDots(Canvas canvas) {
         float r = Math.max(3.5f, Math.min(7f, 5f * zoom));
         for (int i = 0; i < points.size(); i++) {
             ScanPoint p = points.get(i);
             float sx = toSX(p.x), sy = toSY(p.y);
+            float pr = (i == points.size() - 1) ? r * lastDotScale : r;
             dotPaint.setColor(colorForRssi(p.rssi, isColorSplitAfterRoam(i)));
-            canvas.drawCircle(sx, sy, r, dotPaint);
-            canvas.drawCircle(sx, sy, r, dotRimPaint);
+            canvas.drawCircle(sx, sy, pr, dotPaint);
+            dotRimPaint.setColor(AP_RIM_COLORS[Math.min(apIndexForPoint(i), AP_RIM_COLORS.length - 1)]);
+            canvas.drawCircle(sx, sy, pr, dotRimPaint);
         }
     }
 
+    /** Google-Maps-style position puck: heading cone + blue dot with white ring. */
     private void drawCurrentPosition(Canvas canvas) {
         if (!started) return;
-        float sx=toSX(worldX), sy=toSY(worldY), s=16;
-        canvas.drawLine(sx-s,sy,sx+s,sy,crossPaint);
-        canvas.drawLine(sx,sy-s,sx,sy+s,crossPaint);
-        Paint r=new Paint(Paint.ANTI_ALIAS_FLAG);
-        r.setStyle(Paint.Style.STROKE); r.setStrokeWidth(2f);
-        r.setColor(Color.argb(180,255,255,255));
-        canvas.drawCircle(sx,sy,14,r);
+        float sx = toSX(worldX), sy = toSY(worldY);
+
+        if (!Float.isNaN(headingDeg)) {
+            Paint cone = new Paint(Paint.ANTI_ALIAS_FLAG);
+            cone.setShader(new RadialGradient(sx, sy, 46f,
+                    Color.argb(110, 88, 166, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP));
+            // canvas angles: 0° = east; heading 0° = up
+            float start = headingDeg - 90f - 35f;
+            canvas.drawArc(new RectF(sx-46, sy-46, sx+46, sy+46), start, 70f, true, cone);
+        }
+
+        Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
+        halo.setColor(Color.argb(50, 88, 166, 255));
+        canvas.drawCircle(sx, sy, 18f, halo);
+        Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ring.setColor(Color.WHITE);
+        canvas.drawCircle(sx, sy, 11f, ring);
+        Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
+        dot.setColor(Color.rgb(66, 133, 244));
+        canvas.drawCircle(sx, sy, 8f, dot);
+    }
+
+    /** Gradient legend bar: -90 dBm (red) → -45 dBm (green). */
+    private void drawSignalLegend(Canvas canvas, float x, float y, float w) {
+        if (points.isEmpty()) return;
+        float h = 9f;
+        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bg.setColor(Color.argb(160, 10, 15, 25));
+        canvas.drawRoundRect(new RectF(x-6, y-16, x+w+6, y+h+16), 7, 7, bg);
+
+        // gradient built from the heat stops, weak (left) → strong (right)
+        int n = HEAT_STOPS.length;
+        int[] cols = new int[n];
+        float[] pos = new float[n];
+        float lo = HEAT_STOPS[n-1], hi = HEAT_STOPS[0];
+        for (int i = 0; i < n; i++) {
+            cols[i] = HEAT_COLORS[n-1-i];
+            pos[i]  = (HEAT_STOPS[n-1-i] - lo) / (hi - lo);
+        }
+        Paint bar = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bar.setShader(new LinearGradient(x, 0, x+w, 0, cols, pos, Shader.TileMode.CLAMP));
+        canvas.drawRoundRect(new RectF(x, y, x+w, y+h), 4, 4, bar);
+
+        Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
+        txt.setColor(Color.argb(200, 255, 255, 255));
+        txt.setTextSize(10f);
+        canvas.drawText((int) lo + " dBm", x, y - 4, txt);
+        txt.setTextAlign(Paint.Align.RIGHT);
+        canvas.drawText((int) hi + " dBm", x + w, y - 4, txt);
+    }
+
+    /** Metric scale bar (right-bottom), rounded to 1/2/5/10/20 m for the current zoom. */
+    private void drawScaleBar(Canvas canvas, float right, float y) {
+        if (points.isEmpty()) return;
+        float[] steps = {0.5f, 1f, 2f, 5f, 10f, 20f, 50f};
+        float meters = steps[steps.length-1];
+        for (float s : steps) {
+            if (s * UNITS_PER_METER * zoom >= 56f) { meters = s; break; }
+        }
+        float px = meters * UNITS_PER_METER * zoom;
+        if (px > getWidth() * 0.5f) return;
+        float x0 = right - px;
+        Paint ln = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ln.setColor(Color.argb(210, 255, 255, 255));
+        ln.setStrokeWidth(2f);
+        canvas.drawLine(x0, y, right, y, ln);
+        canvas.drawLine(x0, y-5, x0, y+5, ln);
+        canvas.drawLine(right, y-5, right, y+5, ln);
+        Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
+        txt.setColor(Color.argb(210, 255, 255, 255));
+        txt.setTextSize(11f); txt.setTextAlign(Paint.Align.CENTER);
+        String lbl = (meters == Math.floor(meters))
+                ? (int) meters + " m" : meters + " m";
+        canvas.drawText(lbl, (x0 + right) / 2f, y - 8, txt);
     }
 
     private void drawRoamingMarkers(Canvas canvas) {
@@ -639,11 +824,14 @@ public class WifiHeatmapView extends android.view.View {
 
         drawGrid(c);
         drawHeatField(c);
+        drawContour(c);
         drawWalkPath(c);
         drawSampleDots(c);
         drawRoamingMarkers(c);
         drawMarkers(c);
         drawSuggestion(c);
+        drawSignalLegend(c, 16f, 42f, 170f);
+        drawScaleBar(c, bW - 24f, 42f);
         drawExportLegend(c,bW,bH);
         drawWatermark(c,bW,bH,watermarkText);
 
