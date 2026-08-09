@@ -34,16 +34,18 @@ public class WifiHeatmapView extends android.view.View {
     public enum MapMode   { AUTO_FIT, AUTO_CENTER, FREE_SCROLL }
     public enum RoamStyle { FLASH_RING, LIGHTNING, BANNER, COLOR_SPLIT }
 
-    // ±42 m from the start point — long walks + step drift stay inside
-    private static final float WORLD_SIZE   = 6000f;
+    // ±85 m from the start point — big houses with yards stay inside
+    private static final float WORLD_SIZE   = 12000f;
     private static final float WORLD_ORIGIN = WORLD_SIZE / 2f;
 
     // ── Heat field (IDW grid) ────────────────────────────────────
-    private static final float CELL        = 12f;                       // world units per cell
-    private static final int   GRID_N      = (int) (WORLD_SIZE / CELL); // 250 x 250
+    private static final float CELL        = 16f;                       // world units per cell
+    private static final int   GRID_N      = (int) (WORLD_SIZE / CELL); // 750 x 750
     private static final float HEAT_RADIUS = 85f;    // influence radius of one sample (~1.5 steps)
     private static final float W_MIN       = 0.02f;  // below this weight the cell is "not covered"
     private static final float W_FULL      = 0.35f;  // weight at which the cell reaches full opacity
+    private static final float W_CAP       = 2.5f;   // dwelling in place must not fatten the smear
+    private static final float SPLAT_SPACING = 20f;  // spread each sample evenly along the walked segment
     private static final int   HEAT_ALPHA  = 160;    // max opacity of the heat layer
     private static final float MAX_FIT_ZOOM = 1.15f; // don't zoom a single point to full screen
 
@@ -135,6 +137,12 @@ public class WifiHeatmapView extends android.view.View {
     public interface OnStartTapListener { void onStartTap(); }
     private OnStartTapListener startTapListener;
     public void setOnStartTapListener(OnStartTapListener l) { startTapListener = l; }
+
+    /** Fired (rate-limited) when the walker hits the edge of the scan world. */
+    public interface OnBoundaryListener { void onBoundaryReached(); }
+    private OnBoundaryListener boundaryListener;
+    private long lastBoundaryWarn = 0;
+    public void setOnBoundaryListener(OnBoundaryListener l) { boundaryListener = l; }
 
     public WifiHeatmapView(Context c) { super(c); init(); }
     public WifiHeatmapView(Context c, AttributeSet a) { super(c, a); init(); }
@@ -238,6 +246,12 @@ public class WifiHeatmapView extends android.view.View {
         // never let the position leave the world grid
         worldX = Math.max(50f, Math.min(WORLD_SIZE - 50f, wx));
         worldY = Math.max(50f, Math.min(WORLD_SIZE - 50f, wy));
+        // warn the user instead of silently piling points on the border
+        if ((worldX != wx || worldY != wy)
+                && System.currentTimeMillis() - lastBoundaryWarn > 5000) {
+            lastBoundaryWarn = System.currentTimeMillis();
+            if (boundaryListener != null) boundaryListener.onBoundaryReached();
+        }
         started = true; applyMode(); invalidate();
     }
 
@@ -256,13 +270,31 @@ public class WifiHeatmapView extends android.view.View {
             float dy = worldY - lastDrawnY;
             if (Math.sqrt(dx*dx + dy*dy) < MIN_MOVE_PX) return;
         }
+        float prevX = lastDrawnX, prevY = lastDrawnY;
+        int prevRssi = points.isEmpty() ? rssi : points.get(points.size() - 1).rssi;
         lastDrawnX = worldX; lastDrawnY = worldY;
         points.add(new ScanPoint((int) worldX, (int) worldY,
                 colorForRssi(rssi, false), signalLevel, rssi, ssid,
                 freqMhz, linkMbps, rttMs, interference));
-        addHeatSample(worldX, worldY, rssi);
+        if (Float.isNaN(prevX)) addHeatSample(worldX, worldY, rssi);
+        else splatSegment(prevX, prevY, prevRssi, worldX, worldY, rssi);
         pulseNewDot();
         applyMode(); invalidate();
+    }
+
+    /**
+     * Spreads a sample's energy evenly along the segment walked since the last
+     * one — fast walking gives the same smooth ribbon as slow walking instead
+     * of a chain of separate beads.
+     */
+    private void splatSegment(float x0, float y0, int rssi0, float x1, float y1, int rssi1) {
+        float d = (float) Math.hypot(x1 - x0, y1 - y0);
+        int k = Math.max(1, Math.round(d / SPLAT_SPACING));
+        for (int j = 1; j <= k; j++) {
+            float t = j / (float) k;
+            addHeatSample(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t,
+                    Math.round(rssi0 + (rssi1 - rssi0) * t));
+        }
     }
 
     private void pulseNewDot() {
@@ -317,7 +349,7 @@ public class WifiHeatmapView extends android.view.View {
         roamingIndices.addAll(roamIdx);
         roamingLabels.addAll(roamLbls);
         markers.addAll(mks);
-        for (ScanPoint p : points) addHeatSample(p.x, p.y, p.rssi);
+        replaySplats();
         if (!points.isEmpty()) {
             ScanPoint last = points.get(points.size() - 1);
             worldX = last.x; worldY = last.y;
@@ -362,7 +394,7 @@ public class WifiHeatmapView extends android.view.View {
             m.worldX -= ex * f; m.worldY -= ey * f;
         }
         clearHeatField();
-        for (ScanPoint p : points) addHeatSample(p.x, p.y, p.rssi);
+        replaySplats();
         worldX = points.get(n - 1).x; worldY = points.get(n - 1).y;
         computeExtenderSuggestion();
         fillCoverageGaps();
@@ -378,6 +410,18 @@ public class WifiHeatmapView extends android.view.View {
     }
 
     // ── Heat field ───────────────────────────────────────────────
+
+    /** Rebuilds the whole heat field from the point list with segment splatting. */
+    private void replaySplats() {
+        for (int i = 0; i < points.size(); i++) {
+            ScanPoint p = points.get(i);
+            if (i == 0) addHeatSample(p.x, p.y, p.rssi);
+            else {
+                ScanPoint q = points.get(i - 1);
+                splatSegment(q.x, q.y, q.rssi, p.x, p.y, p.rssi);
+            }
+        }
+    }
 
     private void clearHeatField() {
         java.util.Arrays.fill(sumW, 0f);
@@ -407,6 +451,10 @@ public class WifiHeatmapView extends android.view.View {
                 int idx = gy * GRID_N + gx;
                 sumW[idx]  += w;
                 sumWV[idx] += w * rssi;
+                if (sumW[idx] > W_CAP) {    // keep the running average, stop the growth
+                    float s = W_CAP / sumW[idx];
+                    sumW[idx] *= s; sumWV[idx] *= s;
+                }
                 gridPixels[idx] = cellColor(idx);
             }
         }
@@ -423,6 +471,21 @@ public class WifiHeatmapView extends android.view.View {
      */
     private void fillCoverageGaps() {
         if (points.size() < 10) return;
+        // The walk path is continuous even when the heat beads have gaps —
+        // rasterize it as a barrier so the interior can't "leak" outside.
+        barrier = new boolean[GRID_N * GRID_N];
+        for (int i = 1; i < points.size(); i++) {
+            ScanPoint a = points.get(i - 1), b = points.get(i);
+            float d = (float) Math.hypot(b.x - a.x, b.y - a.y);
+            int k = Math.max(1, (int) (d / (CELL / 2f)));
+            for (int j = 0; j <= k; j++) {
+                float t = j / (float) k;
+                int gx = (int) ((a.x + (b.x - a.x) * t) / CELL);
+                int gy = (int) ((a.y + (b.y - a.y) * t) / CELL);
+                if (gx >= 0 && gx < GRID_N && gy >= 0 && gy < GRID_N)
+                    barrier[gy * GRID_N + gx] = true;
+            }
+        }
         boolean[] exterior = new boolean[GRID_N * GRID_N];
         java.util.ArrayDeque<Integer> stack = new java.util.ArrayDeque<>();
         for (int i = 0; i < GRID_N; i++) {
@@ -458,10 +521,15 @@ public class WifiHeatmapView extends android.view.View {
         }
         if (filled > 0)
             heatBitmap.setPixels(gridPixels, 0, GRID_N, 0, 0, GRID_N, GRID_N);
+        barrier = null;
     }
 
+    private boolean[] barrier;   // valid only inside fillCoverageGaps
+
     private void pushUncovered(java.util.ArrayDeque<Integer> stack, boolean[] visited, int idx) {
-        if (!visited[idx] && sumW[idx] < W_MIN) { visited[idx] = true; stack.push(idx); }
+        if (!visited[idx] && sumW[idx] < W_MIN && (barrier == null || !barrier[idx])) {
+            visited[idx] = true; stack.push(idx);
+        }
     }
 
     /**
@@ -650,6 +718,7 @@ public class WifiHeatmapView extends android.view.View {
     /** Stage A overlay — purple hatched circles where signal is good but performance poor. */
     private void drawInterference(Canvas canvas) {
         float cx = 0, cy = 0; int n = 0;
+        float topY = Float.MAX_VALUE;
         float r = Math.max(16f * dp, HEAT_RADIUS * 0.55f * zoom);
         Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         fill.setColor(Color.argb(52, 186, 104, 200));
@@ -661,6 +730,7 @@ public class WifiHeatmapView extends android.view.View {
             if (!p.interference) continue;
             float sx = toSX(p.x), sy = toSY(p.y);
             cx += sx; cy += sy; n++;
+            topY = Math.min(topY, sy);
             canvas.drawCircle(sx, sy, r, fill);
             clip.rewind();
             clip.addCircle(sx, sy, r, Path.Direction.CW);
@@ -675,7 +745,9 @@ public class WifiHeatmapView extends android.view.View {
             Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
             lbl.setTextSize(13f * dp); lbl.setTextAlign(Paint.Align.CENTER);
             lbl.setTypeface(Typeface.DEFAULT_BOLD);
-            float tw = lbl.measureText(label), lx = cx/n, ly = cy/n - r - 24*dp;
+            // chip sits ABOVE the whole marked area, never on the graph itself
+            float tw = lbl.measureText(label), lx = cx/n;
+            float ly = Math.max(6*dp, topY - r - 28*dp);
             RectF chip = new RectF(lx-tw/2-9*dp, ly, lx+tw/2+9*dp, ly+22*dp);
             Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
             bg.setColor(Color.argb(235, 45, 20, 50));
@@ -785,7 +857,6 @@ public class WifiHeatmapView extends android.view.View {
                     getWidth()/2f, getHeight()/2f, hintPaint);
         } else {
             drawHeatField(canvas);
-            drawInterference(canvas);
             drawContour(canvas);
             drawWalkPath(canvas);
             drawSampleDots(canvas);
@@ -793,6 +864,7 @@ public class WifiHeatmapView extends android.view.View {
             drawStartMarker(canvas);
             drawRoamingMarkers(canvas);
             drawMarkers(canvas);
+            drawInterference(canvas);   // always on top — must never hide under the graph
             drawSuggestion(canvas);
             if (scanning) drawCurrentPosition(canvas);
             if (mapMode == MapMode.FREE_SCROLL) drawMiniMap(canvas);
@@ -825,9 +897,10 @@ public class WifiHeatmapView extends android.view.View {
         return n;
     }
 
-    /** Small colored dots at each measurement; rim color identifies the serving AP. */
+    /** Small colored dots at each measurement; rim color identifies the serving AP.
+     *  Kept small and subtle — the heat field is the star, not the dots. */
     private void drawSampleDots(Canvas canvas) {
-        float r = Math.max(3.5f * dp, Math.min(6.5f * dp, 5f * zoom * dp));
+        float r = 3f * dp;
         for (int i = 0; i < points.size(); i++) {
             ScanPoint p = points.get(i);
             float sx = toSX(p.x), sy = toSY(p.y);
@@ -1155,7 +1228,6 @@ public class WifiHeatmapView extends android.view.View {
 
         drawGrid(c);
         drawHeatField(c);
-        drawInterference(c);
         drawContour(c);
         drawWalkPath(c);
         drawSampleDots(c);
@@ -1163,6 +1235,7 @@ public class WifiHeatmapView extends android.view.View {
         drawStartMarker(c);
         drawRoamingMarkers(c);
         drawMarkers(c);
+        drawInterference(c);
         drawSuggestion(c);
         drawSignalLegend(c, 16f*dp, 42f*dp, 150f*dp);
         drawScaleBar(c, bW - 20f*dp, 42f*dp);

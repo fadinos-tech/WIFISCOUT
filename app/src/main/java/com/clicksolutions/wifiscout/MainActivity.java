@@ -275,6 +275,11 @@ public class MainActivity extends AppCompatActivity {
         // Tapping the empty map starts the scan too — STOP stays on the button only
         heatmapView.setOnStartTapListener(() -> { if (!isScanning) toggleScanning(); });
 
+        heatmapView.setOnBoundaryListener(() -> {
+            stickyStatusUntil = System.currentTimeMillis() + 5000;
+            setStatus("⚠ Reached the scan area limit (85 m from start)");
+        });
+
         findViewById(R.id.btnClear).setOnClickListener(v -> {
             heatmapView.clearTrail();
             stepCount = 0; noMoveCount = 0; scanLog.setLength(0);

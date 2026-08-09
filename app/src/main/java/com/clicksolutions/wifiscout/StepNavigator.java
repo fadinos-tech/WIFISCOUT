@@ -74,8 +74,11 @@ public class StepNavigator implements SensorEventListener {
         lastStepTime  = 0;
         gravX = 0; gravY = 0; gravZ = GRAVITY;
 
-        // Rotation vector לכיוון
-        Sensor rotation = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        // כיוון: עדיף GAME_ROTATION_VECTOR — ג'ירוסקופ בלבד, בלי מגנטומטר.
+        // ברזל בקירות מטה את המצפן באופן שיטתי; לנו צריך רק כיוון יחסי.
+        Sensor rotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        if (rotation == null)
+            rotation = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         if (rotation != null)
             sensorManager.registerListener(this, rotation, SensorManager.SENSOR_DELAY_GAME);
 
@@ -121,6 +124,7 @@ public class StepNavigator implements SensorEventListener {
 
         switch (event.sensor.getType()) {
 
+            case Sensor.TYPE_GAME_ROTATION_VECTOR:
             case Sensor.TYPE_ROTATION_VECTOR:
                 updateAzimuth(event.values);
                 break;
