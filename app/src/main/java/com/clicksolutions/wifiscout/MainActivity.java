@@ -60,7 +60,7 @@ public class MainActivity extends AppCompatActivity {
     private Button          btnStartStop, btnSave, btnShare, btnMark, btnMenu, btnExportCsv;
     private ScanStorage     scanStorage;
     private LicenseManager  licenseManager;
-    private TextView        tvTrial;
+    private TextView        tvTrial, tvLicenseTag;
     private TextView        tvSsid, tvSignalStrength, tvSignalQuality;
     private TextView        tvPointCount, tvStatus, tvVersion, tvDrawerVersion, tvThresholdValue, tvNoMoveValue;
     private SeekBar         seekThreshold, seekNoMove;
@@ -225,6 +225,7 @@ public class MainActivity extends AppCompatActivity {
         tvDrawerVersion  = findViewById(R.id.tvDrawerVersion);
         tvThresholdValue = findViewById(R.id.tvThresholdValue);
         tvTrial          = findViewById(R.id.tvTrial);
+        tvLicenseTag     = findViewById(R.id.tvLicenseTag);
         tvScanning       = findViewById(R.id.tvScanning);
         seekThreshold    = findViewById(R.id.seekThreshold);
         rgMapMode        = findViewById(R.id.rgMapMode);
@@ -351,7 +352,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateTrialLabel() {
         if (tvTrial == null) return;
-        if (licenseManager.isLicensed()) {
+        boolean licensed = licenseManager.isLicensed();
+        if (licensed) {
             tvTrial.setText("ACTIVATED");
             tvTrial.setTextColor(0xFF00E676);
             tvTrial.setVisibility(View.VISIBLE);
@@ -360,6 +362,12 @@ public class MainActivity extends AppCompatActivity {
             tvTrial.setText("TRIAL " + used + " of " + LicenseManager.TRIAL_SCANS);
             tvTrial.setTextColor(licenseManager.getTrialRemaining() == 0 ? 0xFFFF5252 : 0xFFFFB300);
             tvTrial.setVisibility(View.VISIBLE);
+        }
+        // drawer License row tag: ACTIVATE (amber) → tap opens the purchase
+        // dialog; ACTIVATED (green) once licensed
+        if (tvLicenseTag != null) {
+            tvLicenseTag.setText(licensed ? "ACTIVATED" : "ACTIVATE");
+            tvLicenseTag.setTextColor(licensed ? 0xFF00E676 : 0xFFFFB300);
         }
     }
 
