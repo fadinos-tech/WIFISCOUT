@@ -59,6 +59,8 @@ public class MainActivity extends AppCompatActivity {
     private WifiHeatmapView heatmapView;
     private Button          btnStartStop, btnSave, btnShare, btnMark, btnMenu, btnExportCsv;
     private ScanStorage     scanStorage;
+    private LicenseManager  licenseManager;
+    private TextView        tvTrial;
     private TextView        tvSsid, tvSignalStrength, tvSignalQuality;
     private TextView        tvPointCount, tvStatus, tvVersion, tvDrawerVersion, tvThresholdValue, tvNoMoveValue;
     private SeekBar         seekThreshold, seekNoMove;
@@ -135,6 +137,9 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         loadPrefs();
         initViews();
+        licenseManager = new LicenseManager(this);
+        licenseManager.setListener(() -> runOnUiThread(this::updateTrialLabel));
+        updateTrialLabel();
         stepNavigator = new StepNavigator(this, (x, y) -> runOnUiThread(() -> {
             stepCount++;
             noMoveCount = 0;
@@ -217,6 +222,7 @@ public class MainActivity extends AppCompatActivity {
         tvVersion        = findViewById(R.id.tvVersion);
         tvDrawerVersion  = findViewById(R.id.tvDrawerVersion);
         tvThresholdValue = findViewById(R.id.tvThresholdValue);
+        tvTrial          = findViewById(R.id.tvTrial);
         tvScanning       = findViewById(R.id.tvScanning);
         seekThreshold    = findViewById(R.id.seekThreshold);
         rgMapMode        = findViewById(R.id.rgMapMode);
@@ -264,10 +270,15 @@ public class MainActivity extends AppCompatActivity {
 
         findViewById(R.id.btnLicense).setOnClickListener(v -> {
             drawerLayout.close();
-            new AlertDialog.Builder(this)
-                    .setTitle("License")
-                    .setMessage("WiFi Scout v" + BuildConfig.VERSION_NAME + "\nClick Solutions Pro\n\nLicense coming soon.")
-                    .setPositiveButton("OK", null).show();
+            if (licenseManager != null && licenseManager.isLicensed()) {
+                new AlertDialog.Builder(this)
+                        .setTitle("License")
+                        .setMessage("WiFi Scout v" + BuildConfig.VERSION_NAME
+                                + "\nClick Solutions Pro\n\n✓ PRO license active.")
+                        .setPositiveButton("OK", null).show();
+            } else {
+                showTrialEndedDialogFromMenu();
+            }
         });
 
         btnStartStop.setOnClickListener(v -> toggleScanning());
@@ -312,6 +323,80 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    // ── Trial / license UI ───────────────────────────────────────
+
+    private void updateTrialLabel() {
+        if (tvTrial == null) return;
+        if (licenseManager.isLicensed()) {
+            tvTrial.setText("PRO");
+            tvTrial.setTextColor(0xFF00E676);
+            tvTrial.setVisibility(View.VISIBLE);
+        } else {
+            int used = licenseManager.getScansUsed();
+            tvTrial.setText("TRIAL " + used + " of " + LicenseManager.TRIAL_SCANS);
+            tvTrial.setTextColor(licenseManager.getTrialRemaining() == 0 ? 0xFFFF5252 : 0xFFFFB300);
+            tvTrial.setVisibility(View.VISIBLE);
+        }
+    }
+
+    /** Same purchase dialog, but phrased for the menu (trial may still be running). */
+    private void showTrialEndedDialogFromMenu() {
+        int left = licenseManager.getTrialRemaining();
+        new AlertDialog.Builder(this)
+                .setTitle("License")
+                .setMessage("WiFi Scout v" + BuildConfig.VERSION_NAME + "\nClick Solutions Pro\n\n"
+                        + (left > 0 ? "Trial: " + left + " scan" + (left == 1 ? "" : "s") + " remaining.\n\n" : "Trial ended.\n\n")
+                        + "Get a " + LicenseManager.LICENSE_YEARS + "-year license for $19.90.")
+                .setPositiveButton("Buy license", (d, w) -> {
+                    Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(LicenseManager.PURCHASE_URL));
+                    try { startActivity(i); } catch (Exception e) {
+                        Toast.makeText(this, LicenseManager.PURCHASE_URL, Toast.LENGTH_LONG).show();
+                    }
+                })
+                .setNeutralButton("I have a code", (d, w) -> showRedeemDialog())
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void showTrialEndedDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Trial ended")
+                .setMessage("Your " + LicenseManager.TRIAL_SCANS + " free scans are used.\n\n"
+                        + "Get a " + LicenseManager.LICENSE_YEARS + "-year license for $19.90 "
+                        + "and keep scanning without limits.")
+                .setCancelable(true)
+                .setPositiveButton("Buy license", (d, w) -> {
+                    Intent i = new Intent(Intent.ACTION_VIEW,
+                            Uri.parse(LicenseManager.PURCHASE_URL));
+                    try { startActivity(i); } catch (Exception e) {
+                        Toast.makeText(this, LicenseManager.PURCHASE_URL, Toast.LENGTH_LONG).show();
+                    }
+                })
+                .setNeutralButton("I have a code", (d, w) -> showRedeemDialog())
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void showRedeemDialog() {
+        EditText et = new EditText(this);
+        et.setHint("License code");
+        et.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        new AlertDialog.Builder(this)
+                .setTitle("Activate license")
+                .setView(et)
+                .setPositiveButton("Activate", (d, w) -> {
+                    Toast.makeText(this, "Checking code…", Toast.LENGTH_SHORT).show();
+                    licenseManager.redeemCode(et.getText().toString(), (ok, msg) ->
+                            runOnUiThread(() -> {
+                                Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+                                updateTrialLabel();
+                            }));
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     // ── WiFi check ────────────────────────────────────────────────
 
     private boolean isWifiConnected() {
@@ -328,6 +413,7 @@ public class MainActivity extends AppCompatActivity {
     private void toggleScanning() {
         if (!hasLocationPermission()) { requestLocationPermission(); return; }
         if (!hasActivityPermission()) { requestActivityPermission(); return; }
+        if (!isScanning && !licenseManager.canScan()) { showTrialEndedDialog(); return; }
         if (isScanning) {
             new AlertDialog.Builder(this)
                     .setTitle("Stop scanning?")
@@ -371,6 +457,8 @@ public class MainActivity extends AppCompatActivity {
         noMoveDialogShowing = false;
         heatmapView.clearTrail(); updatePointCount(); setStatus("");
         heatmapView.setScanning(true);
+        licenseManager.recordScanStart();
+        updateTrialLabel();
         Intent si = new Intent(this, WifiScanService.class);
         si.setAction(WifiScanService.ACTION_START);
         ContextCompat.startForegroundService(this, si);

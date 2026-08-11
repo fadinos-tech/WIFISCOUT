@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "838024490294",
+    "project_id": "wifiscout-62e5f",
+    "storage_bucket": "wifiscout-62e5f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:838024490294:android:2c8f8ddcffc1ce8ce49797",
+        "android_client_info": {
+          "package_name": "com.clicksolutions.wifiscout"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAs0PCMW--kBODtkmlUd31bwIwlXiQWB4g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
