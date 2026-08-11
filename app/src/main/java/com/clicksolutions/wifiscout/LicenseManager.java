@@ -29,7 +29,7 @@ import java.util.Map;
 public class LicenseManager {
 
     public static final int  TRIAL_SCANS   = 3;
-    public static final int  LICENSE_YEARS = 5;
+    public static final int  LICENSE_YEARS = 3;
     public static final String PURCHASE_URL = "https://clicksolutionspro.com/wifiscout";
 
     public interface Listener { void onLicenseStateChanged(); }
@@ -223,6 +223,39 @@ public class LicenseManager {
         if (s.contains("NETWORK") || s.contains("TIMEOUT") || s.contains("UNAVAILABLE"))
             return "No connection to the license server — check your internet and try again.";
         return "Verification failed: " + t.getClass().getSimpleName() + " — try again or contact support.";
+    }
+
+    /**
+     * Grants the license after a confirmed Google Play purchase and records
+     * the sale for the admin dashboard (purchases/{orderId}).
+     */
+    public void grantFromGooglePlay(String orderId, RedeemCallback cb) {
+        long expiry = System.currentTimeMillis()
+                + LICENSE_YEARS * 365L * 24 * 60 * 60 * 1000;
+        String tag = "GP-" + (orderId.length() > 12 ? orderId.substring(orderId.length() - 12) : orderId);
+
+        Map<String, Object> trialUpd = new HashMap<>();
+        trialUpd.put("licensed", true);
+        trialUpd.put("licenseExpiry", expiry);
+        trialUpd.put("licenseCode", tag);
+        trialUpd.put("licenseSource", "google_play");
+        trialUpd.put("updatedAt", FieldValue.serverTimestamp());
+        trialDoc().set(trialUpd, com.google.firebase.firestore.SetOptions.merge());
+
+        Map<String, Object> sale = new HashMap<>();
+        sale.put("deviceId", deviceId);
+        sale.put("productId", "license_3yr");
+        sale.put("orderId", orderId);
+        sale.put("expiry", expiry);
+        sale.put("at", FieldValue.serverTimestamp());
+        db.collection("purchases").document(orderId).set(sale);
+
+        licensed = true;
+        licenseExpiry = expiry;
+        licenseCode = tag;
+        persistLocal();
+        notifyChanged();
+        cb.onResult(true, "Purchase complete — license active for " + LICENSE_YEARS + " years. Thank you!");
     }
 
     // ── Version gate ─────────────────────────────────────────────

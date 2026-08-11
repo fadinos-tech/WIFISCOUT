@@ -60,6 +60,7 @@ public class MainActivity extends AppCompatActivity {
     private Button          btnStartStop, btnSave, btnShare, btnMark, btnMenu, btnExportCsv;
     private ScanStorage     scanStorage;
     private LicenseManager  licenseManager;
+    private BillingManager  billingManager;
     private TextView        tvTrial, tvLicenseTag;
     private TextView        tvSsid, tvSignalStrength, tvSignalQuality;
     private TextView        tvPointCount, tvStatus, tvVersion, tvDrawerVersion, tvThresholdValue, tvNoMoveValue;
@@ -142,6 +143,18 @@ public class MainActivity extends AppCompatActivity {
         updateTrialLabel();
         licenseManager.checkVersion(BuildConfig.VERSION_CODE, (required, latestName, storeUrl) ->
                 runOnUiThread(() -> showUpdateDialog(required, latestName, storeUrl)));
+        billingManager = new BillingManager(this, new BillingManager.Listener() {
+            @Override public void onPurchased(String orderId) {
+                runOnUiThread(() -> licenseManager.grantFromGooglePlay(orderId, (ok, msg) -> {
+                    Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                    updateTrialLabel();
+                }));
+            }
+            @Override public void onPurchaseError(String message) {
+                runOnUiThread(() ->
+                        Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show());
+            }
+        });
         stepNavigator = new StepNavigator(this, (x, y) -> runOnUiThread(() -> {
             stepCount++;
             noMoveCount = 0;
@@ -330,6 +343,23 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /** Buy via Google Play when available; fall back to the website otherwise. */
+    private void startPurchase() {
+        if (billingManager != null && billingManager.isReady()) {
+            billingManager.launchPurchase(this);
+        } else {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(LicenseManager.PURCHASE_URL));
+            try { startActivity(i); } catch (Exception e) {
+                Toast.makeText(this, LicenseManager.PURCHASE_URL, Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private String priceLabel() {
+        String p = billingManager != null ? billingManager.getPrice() : null;
+        return p != null ? p : "$19.90";
+    }
+
     // ── Version gate ─────────────────────────────────────────────
 
     private void showUpdateDialog(boolean required, String latestName, String storeUrl) {
@@ -382,13 +412,8 @@ public class MainActivity extends AppCompatActivity {
                 .setTitle("License")
                 .setMessage("WiFi Scout v" + BuildConfig.VERSION_NAME + "\nClick Solutions Pro\n\n"
                         + (left > 0 ? "Trial: " + left + " scan" + (left == 1 ? "" : "s") + " remaining.\n\n" : "Trial ended.\n\n")
-                        + "Get a " + LicenseManager.LICENSE_YEARS + "-year license for $19.90.")
-                .setPositiveButton("Buy license", (d, w) -> {
-                    Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(LicenseManager.PURCHASE_URL));
-                    try { startActivity(i); } catch (Exception e) {
-                        Toast.makeText(this, LicenseManager.PURCHASE_URL, Toast.LENGTH_LONG).show();
-                    }
-                })
+                        + "Get a " + LicenseManager.LICENSE_YEARS + "-year license for " + priceLabel() + ".")
+                .setPositiveButton("Buy license", (d, w) -> startPurchase())
                 .setNeutralButton("I have a code", (d, w) -> showRedeemDialog())
                 .setNegativeButton("Close", null)
                 .show();
@@ -398,16 +423,10 @@ public class MainActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("Trial ended")
                 .setMessage("Your " + LicenseManager.TRIAL_SCANS + " free scans are used.\n\n"
-                        + "Get a " + LicenseManager.LICENSE_YEARS + "-year license for $19.90 "
+                        + "Get a " + LicenseManager.LICENSE_YEARS + "-year license for " + priceLabel() + " "
                         + "and keep scanning without limits.")
                 .setCancelable(true)
-                .setPositiveButton("Buy license", (d, w) -> {
-                    Intent i = new Intent(Intent.ACTION_VIEW,
-                            Uri.parse(LicenseManager.PURCHASE_URL));
-                    try { startActivity(i); } catch (Exception e) {
-                        Toast.makeText(this, LicenseManager.PURCHASE_URL, Toast.LENGTH_LONG).show();
-                    }
-                })
+                .setPositiveButton("Buy license", (d, w) -> startPurchase())
                 .setNeutralButton("I have a code", (d, w) -> showRedeemDialog())
                 .setNegativeButton("Close", null)
                 .show();
