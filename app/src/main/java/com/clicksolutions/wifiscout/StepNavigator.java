@@ -60,6 +60,7 @@ public class StepNavigator implements SensorEventListener {
     private float   peakMag        = 0f;   // strongest reading in the current peak
     private long    lastStepTime   = 0;
     private long    pendingPeakAt  = 0;    // first rhythm candidate — not yet counted
+    private boolean sdProven       = false; // hardware step detector delivered an event
 
     public StepNavigator(Context context, PositionCallback callback) {
         this.sensorManager  = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
@@ -86,21 +87,17 @@ public class StepNavigator implements SensorEventListener {
         if (rotation != null)
             sensorManager.registerListener(this, rotation, SensorManager.SENSOR_DELAY_GAME);
 
-        // Step Detector חומרתי — בלעדי כשקיים. רישום שני המקורות במקביל
-        // גרם לספירה כפולה, והאקסלרומטר גם נספר ניעורים כצעדים.
+        // היברידי: שניהם נרשמים, האקסלרומטר סופר מיד; ברגע שה-Step Detector
+        // החומרתי מוכיח שהוא חי (אירוע ראשון) — הוא מקבל בלעדיות.
+        // כך אין ספירה כפולה, ואין תלות בחיישן חומרתי רדום שלא יורה כלום.
+        sdProven = false;
         Sensor stepDet = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR);
-        if (stepDet != null) {
+        if (stepDet != null)
             sensorManager.registerListener(this, stepDet, SensorManager.SENSOR_DELAY_GAME);
-            sensorSource = "STEP_DETECTOR";
-            Log.d(TAG, "Using STEP_DETECTOR exclusively");
-        } else {
-            Sensor accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-            if (accel != null) {
-                sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
-                sensorSource = "ACCELEROMETER";
-                Log.d(TAG, "No step detector — accelerometer fallback");
-            }
-        }
+        Sensor accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        if (accel != null)
+            sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
+        sensorSource = "ACCELEROMETER";
 
         lastStepTime = 0; pendingPeakAt = 0; peakMag = 0;
         running = true;
@@ -135,6 +132,7 @@ public class StepNavigator implements SensorEventListener {
                 break;
 
             case Sensor.TYPE_STEP_DETECTOR: {
+                if (!sdProven) { sdProven = true; sensorSource = "STEP_DETECTOR"; }
                 // debounce — חלק מהמכשירים יורים אירועים כפולים
                 long now = System.currentTimeMillis();
                 if (now - lastStepTime >= 250) {
@@ -145,7 +143,8 @@ public class StepNavigator implements SensorEventListener {
             }
 
             case Sensor.TYPE_ACCELEROMETER:
-                detectStepFromAccel(event.values);
+                // ברגע שהחיישן החומרתי חי — האקסלרומטר מפסיק לספור
+                if (!sdProven) detectStepFromAccel(event.values);
                 break;
         }
     }
