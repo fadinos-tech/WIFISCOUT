@@ -403,9 +403,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void showRedeemDialog() {
         EditText et = new EditText(this);
-        et.setHint("License code");
+        et.setHint("e.g. 48213K  (5 digits + letter)");
         et.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        et.setFilters(new android.text.InputFilter[]{
+                new android.text.InputFilter.LengthFilter(6)});
         new AlertDialog.Builder(this)
                 .setTitle("Activate license")
                 .setView(et)
