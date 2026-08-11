@@ -378,6 +378,9 @@ public class MainActivity extends AppCompatActivity {
         heatmapView.post(() -> {
             heatmapView.resetOrigin();
             stepNavigator.start(heatmapView.getWorldOriginX(), heatmapView.getWorldOriginY());
+            // show the starting position immediately — the first sample (~1 s)
+            // draws a dot at the router so the user sees it's alive
+            heatmapView.updatePosition(heatmapView.getWorldOriginX(), heatmapView.getWorldOriginY());
         });
         log("Scan started");
     }
@@ -485,12 +488,12 @@ public class MainActivity extends AppCompatActivity {
         tvSignalStrength.setText(rssi + " dBm" + (freqMhz >= 4900 ? " (5G)" : freqMhz > 0 ? " (2.4G)" : ""));
         tvSignalQuality.setText(qualityLabel(signalLevel));
         checkNoMove();
-        if (stepCount > 0) {
-            heatmapView.addPoint(signalLevel, rssi, ssid, freqMhz, linkMbps, rttMs,
-                    isInterferenceSuspected(rssi, freqMhz, linkMbps, rttMs));
-            log("WiFi  rssi="+rssi+"  freq="+freqMhz+"  link="+linkMbps+"Mbps  rtt="+rttMs
-                    +"ms  point#="+heatmapView.getPointCount()+"  step#="+stepCount);
-        }
+        // no stepCount gate: the first sample draws right at the start position,
+        // and the min-movement filter inside addPoint blocks duplicates anyway
+        heatmapView.addPoint(signalLevel, rssi, ssid, freqMhz, linkMbps, rttMs,
+                isInterferenceSuspected(rssi, freqMhz, linkMbps, rttMs));
+        log("WiFi  rssi="+rssi+"  freq="+freqMhz+"  link="+linkMbps+"Mbps  rtt="+rttMs
+                +"ms  point#="+heatmapView.getPointCount()+"  step#="+stepCount);
         updatePointCount();
     }
 

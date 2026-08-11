@@ -29,7 +29,8 @@ public class StepNavigator implements SensorEventListener {
     // פרמטרי זיהוי צעד
     private static final float GRAVITY       = 9.81f;
     private static final float THRESHOLD     = 1.8f;  // סף תאוצה מעל כבידה (m/s²)
-    private static final float SHAKE_MAG     = 8f;    // פיק חזק מזה = ניעור, לא צעד
+    // ניעור אמיתי הוא 15-25 m/s²; הליכה נמרצת מגיעה ל-10-12 — הסף חייב להיות מעליה
+    private static final float SHAKE_MAG     = 14f;
     private static final long  MIN_STEP_MS   = 300;   // מינימום זמן בין צעדים
     private static final long  MAX_STEP_MS   = 2000;  // מעבר לזה — קצב ההליכה נשבר
     private static final float ALPHA_GRAVITY = 0.85f; // Low-pass לכבידה
