@@ -189,13 +189,26 @@ public class LicenseManager {
     private String describeFailure(Exception e) {
         Throwable t = e.getCause() != null ? e.getCause() : e;
         if (t instanceof IllegalStateException) return t.getMessage();
+        // exact Firestore status when available — makes support debugging trivial
+        if (t instanceof com.google.firebase.firestore.FirebaseFirestoreException) {
+            com.google.firebase.firestore.FirebaseFirestoreException fe =
+                    (com.google.firebase.firestore.FirebaseFirestoreException) t;
+            switch (fe.getCode()) {
+                case PERMISSION_DENIED:
+                    return "License server rejected the request (PERMISSION_DENIED — security rules). Contact support.";
+                case UNAVAILABLE:
+                    return "No connection to the license server — check your internet and try again.";
+                case UNAUTHENTICATED:
+                    return "Not signed in to the license server (UNAUTHENTICATED — is Anonymous auth enabled?).";
+                case NOT_FOUND:
+                    return "License database not found (NOT_FOUND) — contact support.";
+                default:
+                    return "Verification failed (" + fe.getCode().name() + ") — try again or contact support.";
+            }
+        }
         String s = String.valueOf(t.getMessage()).toUpperCase();
-        if (s.contains("PERMISSION_DENIED"))
-            return "The license server rejected the request (security rules). Contact support.";
-        if (s.contains("UNAVAILABLE") || s.contains("NETWORK") || s.contains("TIMEOUT"))
+        if (s.contains("NETWORK") || s.contains("TIMEOUT") || s.contains("UNAVAILABLE"))
             return "No connection to the license server — check your internet and try again.";
-        if (s.contains("NOT_FOUND"))
-            return "License database not found — contact support.";
         return "Verification failed: " + t.getClass().getSimpleName() + " — try again or contact support.";
     }
 
