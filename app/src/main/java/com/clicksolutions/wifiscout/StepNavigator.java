@@ -29,7 +29,9 @@ public class StepNavigator implements SensorEventListener {
     // פרמטרי זיהוי צעד
     private static final float GRAVITY       = 9.81f;
     private static final float THRESHOLD     = 1.8f;  // סף תאוצה מעל כבידה (m/s²)
+    private static final float SHAKE_MAG     = 8f;    // פיק חזק מזה = ניעור, לא צעד
     private static final long  MIN_STEP_MS   = 300;   // מינימום זמן בין צעדים
+    private static final long  MAX_STEP_MS   = 2000;  // מעבר לזה — קצב ההליכה נשבר
     private static final float ALPHA_GRAVITY = 0.85f; // Low-pass לכבידה
 
     // Low-pass לכיוון
@@ -55,7 +57,9 @@ public class StepNavigator implements SensorEventListener {
     private float   gravX = 0, gravY = 0, gravZ = GRAVITY;
     private float   lastLinearMag  = 0f;
     private boolean wasAboveThresh = false;
+    private float   peakMag        = 0f;   // strongest reading in the current peak
     private long    lastStepTime   = 0;
+    private long    pendingPeakAt  = 0;    // first rhythm candidate — not yet counted
 
     public StepNavigator(Context context, PositionCallback callback) {
         this.sensorManager  = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
@@ -82,22 +86,23 @@ public class StepNavigator implements SensorEventListener {
         if (rotation != null)
             sensorManager.registerListener(this, rotation, SensorManager.SENSOR_DELAY_GAME);
 
-        // נסה Step Detector ראשון
+        // Step Detector חומרתי — בלעדי כשקיים. רישום שני המקורות במקביל
+        // גרם לספירה כפולה, והאקסלרומטר גם נספר ניעורים כצעדים.
         Sensor stepDet = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR);
         if (stepDet != null) {
             sensorManager.registerListener(this, stepDet, SensorManager.SENSOR_DELAY_GAME);
             sensorSource = "STEP_DETECTOR";
-            Log.d(TAG, "Using STEP_DETECTOR");
+            Log.d(TAG, "Using STEP_DETECTOR exclusively");
+        } else {
+            Sensor accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            if (accel != null) {
+                sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
+                sensorSource = "ACCELEROMETER";
+                Log.d(TAG, "No step detector — accelerometer fallback");
+            }
         }
 
-        // תמיד רשום גם Accelerometer כ-fallback
-        Sensor accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        if (accel != null) {
-            sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
-            if (stepDet == null) sensorSource = "ACCELEROMETER";
-            Log.d(TAG, "Accelerometer registered as fallback");
-        }
-
+        lastStepTime = 0; pendingPeakAt = 0; peakMag = 0;
         running = true;
     }
 
@@ -129,10 +134,15 @@ public class StepNavigator implements SensorEventListener {
                 updateAzimuth(event.values);
                 break;
 
-            case Sensor.TYPE_STEP_DETECTOR:
-                // Step Detector של סמסונג — אם מגיע, טוב
-                onStep("SD");
+            case Sensor.TYPE_STEP_DETECTOR: {
+                // debounce — חלק מהמכשירים יורים אירועים כפולים
+                long now = System.currentTimeMillis();
+                if (now - lastStepTime >= 250) {
+                    lastStepTime = now;
+                    onStep("SD");
+                }
                 break;
+            }
 
             case Sensor.TYPE_ACCELEROMETER:
                 detectStepFromAccel(event.values);
@@ -179,10 +189,12 @@ public class StepNavigator implements SensorEventListener {
     }
 
     /**
-     * זיהוי צעד מהאקסלרומטר:
+     * זיהוי צעד מהאקסלרומטר (fallback בלבד):
      * 1. Low-pass filter → מוציא רכיב הכבידה
      * 2. מחשב תאוצה ליניארית (בלי כבידה)
-     * 3. מזהה עלייה מעל THRESHOLD ואז ירידה → צעד
+     * 3. מזהה עלייה מעל THRESHOLD ואז ירידה → מועמד לצעד
+     * 4. סינון ניעורים: פיק אלים נפסל, ופיק ראשון אחרי שקט נספר רק
+     *    אם מגיע אחריו פיק שני בקצב הליכה אנושי (300-2000ms).
      */
     private void detectStepFromAccel(float[] v) {
         // עדכן כבידה עם low-pass
@@ -197,14 +209,32 @@ public class StepNavigator implements SensorEventListener {
         float mag  = (float) Math.sqrt(linX*linX + linY*linY + linZ*linZ);
 
         // Peak detection
-        if (!wasAboveThresh && mag > THRESHOLD) {
+        if (mag > THRESHOLD) {
             wasAboveThresh = true;
+            peakMag = Math.max(peakMag, mag);
         } else if (wasAboveThresh && mag < THRESHOLD * 0.5f) {
             wasAboveThresh = false;
+            float strength = peakMag; peakMag = 0;
             long now = System.currentTimeMillis();
-            if (now - lastStepTime > MIN_STEP_MS) {
+
+            // ניעור/טלטול — עוצמה לא אנושית להליכה; שובר גם את הקצב
+            if (strength > SHAKE_MAG) { pendingPeakAt = 0; return; }
+
+            long sinceStep = now - lastStepTime;
+            if (lastStepTime != 0 && sinceStep >= MIN_STEP_MS && sinceStep <= MAX_STEP_MS) {
+                // באמצע הליכה — קצב תקין, נספר
                 lastStepTime = now;
                 onStep("ACC");
+            } else if (pendingPeakAt != 0
+                    && now - pendingPeakAt >= MIN_STEP_MS
+                    && now - pendingPeakAt <= MAX_STEP_MS) {
+                // שני פיקים בקצב הליכה — ההליכה אושרה
+                pendingPeakAt = 0;
+                lastStepTime = now;
+                onStep("ACC");
+            } else {
+                // פיק בודד אחרי שקט (או מהיר מדי) — מועמד בלבד, לא נספר
+                pendingPeakAt = now;
             }
         }
         lastLinearMag = mag;
