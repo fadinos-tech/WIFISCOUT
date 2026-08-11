@@ -32,7 +32,6 @@ public class StepNavigator implements SensorEventListener {
     // ניעור אמיתי הוא 15-25 m/s²; הליכה נמרצת מגיעה ל-10-12 — הסף חייב להיות מעליה
     private static final float SHAKE_MAG     = 14f;
     private static final long  MIN_STEP_MS   = 300;   // מינימום זמן בין צעדים
-    private static final long  MAX_STEP_MS   = 2000;  // מעבר לזה — קצב ההליכה נשבר
     private static final float ALPHA_GRAVITY = 0.85f; // Low-pass לכבידה
 
     // Low-pass לכיוון
@@ -60,8 +59,6 @@ public class StepNavigator implements SensorEventListener {
     private boolean wasAboveThresh = false;
     private float   peakMag        = 0f;   // strongest reading in the current peak
     private long    lastStepTime   = 0;
-    private long    pendingPeakAt  = 0;    // first rhythm candidate — not yet counted
-    private boolean sdProven       = false; // hardware step detector delivered an event
 
     public StepNavigator(Context context, PositionCallback callback) {
         this.sensorManager  = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
@@ -88,19 +85,15 @@ public class StepNavigator implements SensorEventListener {
         if (rotation != null)
             sensorManager.registerListener(this, rotation, SensorManager.SENSOR_DELAY_GAME);
 
-        // היברידי: שניהם נרשמים, האקסלרומטר סופר מיד; ברגע שה-Step Detector
-        // החומרתי מוכיח שהוא חי (אירוע ראשון) — הוא מקבל בלעדיות.
-        // כך אין ספירה כפולה, ואין תלות בחיישן חומרתי רדום שלא יורה כלום.
-        sdProven = false;
-        Sensor stepDet = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR);
-        if (stepDet != null)
-            sensorManager.registerListener(this, stepDet, SensorManager.SENSOR_DELAY_GAME);
+        // אקסלרומטר בלבד — זה מה שעבד. ה-Step Detector החומרתי של חלק
+        // מהמכשירים (סמסונג במיוחד) יורה באיחור ובמקבצים, וכל ניסיון לשלב
+        // אותו גרם להליכה "תקועה". הגנת הניעור נשארת דרך סף העוצמה בלבד.
         Sensor accel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         if (accel != null)
             sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
         sensorSource = "ACCELEROMETER";
 
-        lastStepTime = 0; pendingPeakAt = 0; peakMag = 0;
+        lastStepTime = 0; peakMag = 0;
         running = true;
     }
 
@@ -132,20 +125,8 @@ public class StepNavigator implements SensorEventListener {
                 updateAzimuth(event.values);
                 break;
 
-            case Sensor.TYPE_STEP_DETECTOR: {
-                if (!sdProven) { sdProven = true; sensorSource = "STEP_DETECTOR"; }
-                // debounce — חלק מהמכשירים יורים אירועים כפולים
-                long now = System.currentTimeMillis();
-                if (now - lastStepTime >= 250) {
-                    lastStepTime = now;
-                    onStep("SD");
-                }
-                break;
-            }
-
             case Sensor.TYPE_ACCELEROMETER:
-                // ברגע שהחיישן החומרתי חי — האקסלרומטר מפסיק לספור
-                if (!sdProven) detectStepFromAccel(event.values);
+                detectStepFromAccel(event.values);
                 break;
         }
     }
@@ -189,12 +170,11 @@ public class StepNavigator implements SensorEventListener {
     }
 
     /**
-     * זיהוי צעד מהאקסלרומטר (fallback בלבד):
+     * זיהוי צעד מהאקסלרומטר — הלוגיקה הפשוטה שעובדת:
      * 1. Low-pass filter → מוציא רכיב הכבידה
      * 2. מחשב תאוצה ליניארית (בלי כבידה)
-     * 3. מזהה עלייה מעל THRESHOLD ואז ירידה → מועמד לצעד
-     * 4. סינון ניעורים: פיק אלים נפסל, ופיק ראשון אחרי שקט נספר רק
-     *    אם מגיע אחריו פיק שני בקצב הליכה אנושי (300-2000ms).
+     * 3. עלייה מעל THRESHOLD ואז ירידה → צעד (עם debounce של 300ms)
+     * 4. הגנת ניעור אחת בלבד: פיק אלים מ-SHAKE_MAG אינו צעד אנושי — נפסל.
      */
     private void detectStepFromAccel(float[] v) {
         // עדכן כבידה עם low-pass
@@ -216,25 +196,10 @@ public class StepNavigator implements SensorEventListener {
             wasAboveThresh = false;
             float strength = peakMag; peakMag = 0;
             long now = System.currentTimeMillis();
-
-            // ניעור/טלטול — עוצמה לא אנושית להליכה; שובר גם את הקצב
-            if (strength > SHAKE_MAG) { pendingPeakAt = 0; return; }
-
-            long sinceStep = now - lastStepTime;
-            if (lastStepTime != 0 && sinceStep >= MIN_STEP_MS && sinceStep <= MAX_STEP_MS) {
-                // באמצע הליכה — קצב תקין, נספר
+            if (strength > SHAKE_MAG) return;          // violent shake — not a step
+            if (now - lastStepTime > MIN_STEP_MS) {
                 lastStepTime = now;
                 onStep("ACC");
-            } else if (pendingPeakAt != 0
-                    && now - pendingPeakAt >= MIN_STEP_MS
-                    && now - pendingPeakAt <= MAX_STEP_MS) {
-                // שני פיקים בקצב הליכה — ההליכה אושרה
-                pendingPeakAt = 0;
-                lastStepTime = now;
-                onStep("ACC");
-            } else {
-                // פיק בודד אחרי שקט (או מהיר מדי) — מועמד בלבד, לא נספר
-                pendingPeakAt = now;
             }
         }
         lastLinearMag = mag;
