@@ -274,10 +274,14 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnLicense).setOnClickListener(v -> {
             drawerLayout.close();
             if (licenseManager != null && licenseManager.isLicensed()) {
+                SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy", Locale.getDefault());
+                String code = licenseManager.getLicenseCode();
                 new AlertDialog.Builder(this)
                         .setTitle("License")
                         .setMessage("WiFi Scout v" + BuildConfig.VERSION_NAME
-                                + "\nClick Solutions Pro\n\n✓ License ACTIVATED.")
+                                + "\nClick Solutions Pro\n\n✓ License ACTIVATED"
+                                + (code != null ? "\nCode: " + code : "")
+                                + "\nValid until: " + sdf.format(new Date(licenseManager.getLicenseExpiry())))
                         .setPositiveButton("OK", null).show();
             } else {
                 showTrialEndedDialogFromMenu();

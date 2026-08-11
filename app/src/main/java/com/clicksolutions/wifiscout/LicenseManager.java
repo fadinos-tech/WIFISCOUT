@@ -45,6 +45,7 @@ public class LicenseManager {
     private int     scansUsed;
     private boolean licensed;
     private long    licenseExpiry;
+    private String  licenseCode;
 
     @SuppressLint("HardwareIds")
     public LicenseManager(Context context) {
@@ -55,6 +56,7 @@ public class LicenseManager {
         scansUsed     = prefs.getInt("scans_used", 0);
         licensed      = prefs.getBoolean("licensed", false);
         licenseExpiry = prefs.getLong("license_expiry", 0);
+        licenseCode   = prefs.getString("license_code", null);
         syncFromRemote();
     }
 
@@ -69,6 +71,8 @@ public class LicenseManager {
     public int getScansUsed()     { return Math.min(scansUsed, TRIAL_SCANS); }
     public int getTrialRemaining(){ return Math.max(0, TRIAL_SCANS - scansUsed); }
     public boolean canScan()      { return isLicensed() || scansUsed < TRIAL_SCANS; }
+    public String getLicenseCode(){ return licenseCode; }
+    public long getLicenseExpiry(){ return licenseExpiry; }
 
     /** Call when a scan actually starts — burns one trial scan (unless licensed). */
     public void recordScanStart() {
@@ -97,12 +101,17 @@ public class LicenseManager {
                 Long remoteExp = snap.getLong("licenseExpiry");
                 // remote wins for license; the HIGHER count wins for trials
                 if (remoteUsed != null && remoteUsed > scansUsed) scansUsed = remoteUsed.intValue();
-                if (remoteLic != null) licensed = remoteLic;
-                if (remoteExp != null) licenseExpiry = remoteExp;
-                persistLocal();
-            } else if (scansUsed > 0) {
-                recordScanStartMirror();   // device known locally but not remotely
+                licensed      = Boolean.TRUE.equals(remoteLic);   // absent = revoked
+                licenseExpiry = remoteExp != null ? remoteExp : 0;
+                licenseCode   = snap.getString("licenseCode");
+            } else {
+                // the CLOUD is the source of truth: no record = no license.
+                // Without this, a revoked/deleted device kept its local
+                // ACTIVATED copy until the app was reinstalled.
+                licensed = false; licenseExpiry = 0; licenseCode = null;
+                if (scansUsed > 0) recordScanStartMirror();  // keep the trial count honest
             }
+            persistLocal();
             notifyChanged();
         });
         if (auth.getCurrentUser() != null) fetch.run();
@@ -121,7 +130,8 @@ public class LicenseManager {
     private void persistLocal() {
         prefs.edit().putInt("scans_used", scansUsed)
                 .putBoolean("licensed", licensed)
-                .putLong("license_expiry", licenseExpiry).apply();
+                .putLong("license_expiry", licenseExpiry)
+                .putString("license_code", licenseCode).apply();
     }
 
     private void notifyChanged() {
@@ -181,6 +191,7 @@ public class LicenseManager {
         }).addOnSuccessListener(expiry -> {
             licensed = true;
             licenseExpiry = expiry;
+            licenseCode = code;
             persistLocal();
             notifyChanged();
             cb.onResult(true, "License activated — valid for " + LICENSE_YEARS + " years. Thank you!");
