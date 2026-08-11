@@ -144,8 +144,10 @@ public class LicenseManager {
             FirebaseAuth.getInstance().signInAnonymously()
                     .addOnSuccessListener(r -> doRedeem(code, cb))
                     .addOnFailureListener(e -> cb.onResult(false,
-                            "Can't reach the license server (" + e.getClass().getSimpleName()
-                            + "). Check your internet connection and try again."));
+                            e instanceof com.google.firebase.auth.FirebaseAuthException
+                              ? "Server sign-in refused — Anonymous authentication is not enabled on the server (contact support)."
+                              : "Can't reach the license server (" + e.getClass().getSimpleName()
+                                + "). Check your internet connection and try again."));
             return;
         }
         doRedeem(code, cb);
