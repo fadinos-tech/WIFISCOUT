@@ -140,6 +140,8 @@ public class MainActivity extends AppCompatActivity {
         licenseManager = new LicenseManager(this);
         licenseManager.setListener(() -> runOnUiThread(this::updateTrialLabel));
         updateTrialLabel();
+        licenseManager.checkVersion(BuildConfig.VERSION_CODE, (required, latestName, storeUrl) ->
+                runOnUiThread(() -> showUpdateDialog(required, latestName, storeUrl)));
         stepNavigator = new StepNavigator(this, (x, y) -> runOnUiThread(() -> {
             stepCount++;
             noMoveCount = 0;
@@ -321,6 +323,28 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "Last marker removed", Toast.LENGTH_SHORT).show();
             return true;
         });
+    }
+
+    // ── Version gate ─────────────────────────────────────────────
+
+    private void showUpdateDialog(boolean required, String latestName, String storeUrl) {
+        if (isFinishing() || isDestroyed()) return;
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle(required ? "Update required" : "Update available")
+                .setMessage("A newer version of WiFi Scout is available"
+                        + (latestName != null ? " (v" + latestName + ")" : "") + ".\n\n"
+                        + (required
+                            ? "This version is no longer supported — please update to continue."
+                            : "Update now to get the latest features and fixes."))
+                .setCancelable(!required)
+                .setPositiveButton("Update", (d, w) -> {
+                    try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(storeUrl))); }
+                    catch (Exception e) { Toast.makeText(this, storeUrl, Toast.LENGTH_LONG).show(); }
+                    if (required) finish();
+                });
+        if (!required) b.setNegativeButton("Later", null);
+        else b.setNegativeButton("Exit", (d, w) -> finish());
+        b.show();
     }
 
     // ── Trial / license UI ───────────────────────────────────────

@@ -134,6 +134,24 @@ public class LicenseManager {
     public void redeemCode(String rawCode, RedeemCallback cb) {
         String code = rawCode.trim().toUpperCase();
         if (code.isEmpty()) { cb.onResult(false, "Enter a code."); return; }
+        // code format: 5 digits + one uppercase letter, e.g. 48213K
+        if (!code.matches("\\d{5}[A-Z]")) {
+            cb.onResult(false, "Invalid code format — expected 5 digits followed by a letter (e.g. 48213K).");
+            return;
+        }
+        if (FirebaseAuth.getInstance().getCurrentUser() == null) {
+            // auth may not have completed yet — try again, then redeem
+            FirebaseAuth.getInstance().signInAnonymously()
+                    .addOnSuccessListener(r -> doRedeem(code, cb))
+                    .addOnFailureListener(e -> cb.onResult(false,
+                            "Can't reach the license server (" + e.getClass().getSimpleName()
+                            + "). Check your internet connection and try again."));
+            return;
+        }
+        doRedeem(code, cb);
+    }
+
+    private void doRedeem(String code, RedeemCallback cb) {
         DocumentReference codeRef = db.collection("licenses").document(code);
         db.runTransaction(tx -> {
             com.google.firebase.firestore.DocumentSnapshot snap = tx.get(codeRef);
@@ -148,6 +166,7 @@ public class LicenseManager {
             Map<String, Object> codeUpd = new HashMap<>();
             codeUpd.put("used", true);
             codeUpd.put("deviceId", deviceId);
+            codeUpd.put("expiry", expiry);
             codeUpd.put("claimedAt", FieldValue.serverTimestamp());
             tx.set(codeRef, codeUpd, com.google.firebase.firestore.SetOptions.merge());
             Map<String, Object> trialUpd = new HashMap<>();
@@ -163,12 +182,47 @@ public class LicenseManager {
             persistLocal();
             notifyChanged();
             cb.onResult(true, "License activated — valid for " + LICENSE_YEARS + " years. Thank you!");
-        }).addOnFailureListener(e -> {
-            String msg = e.getCause() instanceof IllegalStateException
-                    ? e.getCause().getMessage()
-                    : (e instanceof IllegalStateException ? e.getMessage()
-                       : "Couldn't verify the code — check your internet connection.");
-            cb.onResult(false, msg);
-        });
+        }).addOnFailureListener(e -> cb.onResult(false, describeFailure(e)));
+    }
+
+    /** Human-readable reason instead of a generic "check internet". */
+    private String describeFailure(Exception e) {
+        Throwable t = e.getCause() != null ? e.getCause() : e;
+        if (t instanceof IllegalStateException) return t.getMessage();
+        String s = String.valueOf(t.getMessage()).toUpperCase();
+        if (s.contains("PERMISSION_DENIED"))
+            return "The license server rejected the request (security rules). Contact support.";
+        if (s.contains("UNAVAILABLE") || s.contains("NETWORK") || s.contains("TIMEOUT"))
+            return "No connection to the license server — check your internet and try again.";
+        if (s.contains("NOT_FOUND"))
+            return "License database not found — contact support.";
+        return "Verification failed: " + t.getClass().getSimpleName() + " — try again or contact support.";
+    }
+
+    // ── Version gate ─────────────────────────────────────────────
+
+    public interface VersionCallback {
+        /** required = must update to keep using; storeUrl = where to update. */
+        void onUpdateNeeded(boolean required, String latestName, String storeUrl);
+    }
+
+    /**
+     * Reads config/app {latestVersionCode, minVersionCode, latestVersionName,
+     * storeUrl} and fires the callback when this build is outdated.
+     */
+    public void checkVersion(int currentVersionCode, VersionCallback cb) {
+        db.collection("config").document("app").get()
+            .addOnSuccessListener(snap -> {
+                if (!snap.exists()) return;
+                Long latest = snap.getLong("latestVersionCode");
+                Long min    = snap.getLong("minVersionCode");
+                String name = snap.getString("latestVersionName");
+                String url  = snap.getString("storeUrl");
+                if (url == null || url.isEmpty()) url = PURCHASE_URL;
+                if (min != null && currentVersionCode < min)
+                    cb.onUpdateNeeded(true, name != null ? name : String.valueOf(latest), url);
+                else if (latest != null && currentVersionCode < latest)
+                    cb.onUpdateNeeded(false, name != null ? name : String.valueOf(latest), url);
+            });
     }
 }
