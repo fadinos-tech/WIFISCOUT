@@ -33,6 +33,7 @@ public class WifiHeatmapView extends android.view.View {
 
     public enum MapMode   { AUTO_FIT, AUTO_CENTER, FREE_SCROLL }
     public enum RoamStyle { FLASH_RING, LIGHTNING, BANNER, COLOR_SPLIT }
+    public enum MapLayer  { SIGNAL, SPEED }   // color by dBm or by link Mbps
 
     // ±85 m from the start point — big houses with yards stay inside
     private static final float WORLD_SIZE   = 12000f;
@@ -45,6 +46,8 @@ public class WifiHeatmapView extends android.view.View {
     private static final float W_MIN       = 0.02f;  // below this weight the cell is "not covered"
     private static final float W_FULL      = 0.35f;  // weight at which the cell reaches full opacity
     private static final float W_CAP       = 2.5f;   // dwelling in place must not fatten the smear
+    private static final float W_VIS       = 0.004f; // render threshold — soft fading outer edge
+    private static final float W_LOW       = W_FULL * 0.6f; // below this, enclosed cells get blended fill
     private static final float SPLAT_SPACING = 20f;  // spread each sample evenly along the walked segment
     private static final int   HEAT_ALPHA  = 160;    // max opacity of the heat layer
     private static final float MAX_FIT_ZOOM = 1.15f; // don't zoom a single point to full screen
@@ -54,10 +57,17 @@ public class WifiHeatmapView extends android.view.View {
     private static final float WEAK_RSSI   = -72f;   // "weak" threshold for extender suggestion
     private static final float CONTOUR_RSSI = -70f;  // weak-zone contour line level
     private static final float UNITS_PER_METER = 71f; // one step = 50 units ≈ 0.7 m
+    private static final float CELL_AREA_M2 = (CELL / UNITS_PER_METER) * (CELL / UNITS_PER_METER);
+    // ignore weak islands smaller than ~1.5 m² — measurement noise, not a dead zone
+    private static final int   MIN_CONTOUR_CELLS = Math.max(8, (int) (1.5f / CELL_AREA_M2));
 
     private final float[] sumW  = new float[GRID_N * GRID_N];
     private final float[] sumWV = new float[GRID_N * GRID_N];
+    private final float[] sumWSp  = new float[GRID_N * GRID_N];  // link-speed weights
+    private final float[] sumWVSp = new float[GRID_N * GRID_N];  // link-speed weighted values
     private final int[]   gridPixels = new int[GRID_N * GRID_N];
+    private MapLayer mapLayer = MapLayer.SIGNAL;
+    private final RectF layerChipRect = new RectF();  // dBm|Mbps toggle hit area
     private Bitmap heatBitmap;
     private final Matrix heatMatrix = new Matrix();
     private final Paint  heatPaint  = new Paint(Paint.FILTER_BITMAP_FLAG);
@@ -198,7 +208,14 @@ public class WifiHeatmapView extends android.view.View {
                             if (startTapListener != null) startTapListener.onStartTap();
                             return true;
                         }
-                        return handleRoamTap(e.getX(), e.getY());
+                        if (layerChipRect.contains(e.getX(), e.getY())) {
+                            setMapLayer(mapLayer == MapLayer.SIGNAL
+                                    ? MapLayer.SPEED : MapLayer.SIGNAL);
+                            return true;
+                        }
+                        if (handleRoamTap(e.getX(), e.getY())) return true;
+                        if (handlePointTap(e.getX(), e.getY())) return true;
+                        return handleAreaTap(e.getX(), e.getY());
                     }
                     @Override public void onLongPress(MotionEvent e) { handleTouch(e.getX(), e.getY()); }
                 });
@@ -235,10 +252,27 @@ public class WifiHeatmapView extends android.view.View {
     public MapMode   getMapMode()   { return mapMode; }
     public RoamStyle getRoamStyle() { return roamStyle; }
 
+    // Area estimates (approximate — based on walked coverage, not the real floor plan)
+    private float coveredAreaM2 = 0f;
+    private float weakAreaM2 = 0f;
+    public float getCoveredAreaM2() { return coveredAreaM2; }
+    public float getWeakAreaM2()    { return weakAreaM2; }
+
+    private void computeAreas() {
+        int covered = 0, weak = 0;
+        for (int idx = 0; idx < sumW.length; idx++) {
+            if (sumW[idx] < W_MIN) continue;
+            covered++;
+            if (sumWV[idx] / sumW[idx] <= CONTOUR_RSSI) weak++;
+        }
+        coveredAreaM2 = covered * CELL_AREA_M2;
+        weakAreaM2    = weak * CELL_AREA_M2;
+    }
+
     public void setScanning(boolean s) {
         scanning = s;
         if (s) clearSuggestion();
-        else { computeExtenderSuggestion(); fillCoverageGaps(); }
+        else { computeExtenderSuggestion(); computeAreas(); fillCoverageGaps(); }
         invalidate();
     }
 
@@ -276,8 +310,9 @@ public class WifiHeatmapView extends android.view.View {
         points.add(new ScanPoint((int) worldX, (int) worldY,
                 colorForRssi(rssi, false), signalLevel, rssi, ssid,
                 freqMhz, linkMbps, rttMs, interference));
-        if (Float.isNaN(prevX)) addHeatSample(worldX, worldY, rssi);
-        else splatSegment(prevX, prevY, prevRssi, worldX, worldY, rssi);
+        int prevLink = points.size() < 2 ? linkMbps : points.get(points.size() - 2).linkMbps;
+        if (Float.isNaN(prevX)) addHeatSample(worldX, worldY, rssi, linkMbps);
+        else splatSegment(prevX, prevY, prevRssi, prevLink, worldX, worldY, rssi, linkMbps);
         pulseNewDot();
         applyMode(); invalidate();
     }
@@ -287,13 +322,16 @@ public class WifiHeatmapView extends android.view.View {
      * one — fast walking gives the same smooth ribbon as slow walking instead
      * of a chain of separate beads.
      */
-    private void splatSegment(float x0, float y0, int rssi0, float x1, float y1, int rssi1) {
+    private void splatSegment(float x0, float y0, int rssi0, int link0,
+                              float x1, float y1, int rssi1, int link1) {
         float d = (float) Math.hypot(x1 - x0, y1 - y0);
         int k = Math.max(1, Math.round(d / SPLAT_SPACING));
+        boolean lerpLink = link0 > 0 && link1 > 0;
         for (int j = 1; j <= k; j++) {
             float t = j / (float) k;
+            int link = lerpLink ? Math.round(link0 + (link1 - link0) * t) : link1;
             addHeatSample(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t,
-                    Math.round(rssi0 + (rssi1 - rssi0) * t));
+                    Math.round(rssi0 + (rssi1 - rssi0) * t), link);
         }
     }
 
@@ -356,6 +394,7 @@ public class WifiHeatmapView extends android.view.View {
         }
         started = true; scanning = false;
         computeExtenderSuggestion();
+        computeAreas();
         fillCoverageGaps();
         applyMode(); invalidate();
     }
@@ -397,6 +436,7 @@ public class WifiHeatmapView extends android.view.View {
         replaySplats();
         worldX = points.get(n - 1).x; worldY = points.get(n - 1).y;
         computeExtenderSuggestion();
+        computeAreas();
         fillCoverageGaps();
         applyMode(); invalidate();
     }
@@ -415,10 +455,10 @@ public class WifiHeatmapView extends android.view.View {
     private void replaySplats() {
         for (int i = 0; i < points.size(); i++) {
             ScanPoint p = points.get(i);
-            if (i == 0) addHeatSample(p.x, p.y, p.rssi);
+            if (i == 0) addHeatSample(p.x, p.y, p.rssi, p.linkMbps);
             else {
                 ScanPoint q = points.get(i - 1);
-                splatSegment(q.x, q.y, q.rssi, p.x, p.y, p.rssi);
+                splatSegment(q.x, q.y, q.rssi, q.linkMbps, p.x, p.y, p.rssi, p.linkMbps);
             }
         }
     }
@@ -426,14 +466,16 @@ public class WifiHeatmapView extends android.view.View {
     private void clearHeatField() {
         java.util.Arrays.fill(sumW, 0f);
         java.util.Arrays.fill(sumWV, 0f);
+        java.util.Arrays.fill(sumWSp, 0f);
+        java.util.Arrays.fill(sumWVSp, 0f);
         java.util.Arrays.fill(gridPixels, 0);
         heatBitmap.eraseColor(Color.TRANSPARENT);
         contourPath.rewind();
         contourDirty = false;
     }
 
-    /** Splat one RSSI sample into the grid with a smooth compact kernel. */
-    private void addHeatSample(float wx, float wy, int rssi) {
+    /** Splat one sample (RSSI + optional link speed) into the grid with a smooth compact kernel. */
+    private void addHeatSample(float wx, float wy, int rssi, int linkMbps) {
         int cellR = (int) Math.ceil(HEAT_RADIUS / CELL);
         int cx = (int) (wx / CELL), cy = (int) (wy / CELL);
         int x0 = Math.max(0, cx - cellR), x1 = Math.min(GRID_N - 1, cx + cellR);
@@ -454,6 +496,14 @@ public class WifiHeatmapView extends android.view.View {
                 if (sumW[idx] > W_CAP) {    // keep the running average, stop the growth
                     float s = W_CAP / sumW[idx];
                     sumW[idx] *= s; sumWV[idx] *= s;
+                }
+                if (linkMbps > 0) {
+                    sumWSp[idx]  += w;
+                    sumWVSp[idx] += w * linkMbps;
+                    if (sumWSp[idx] > W_CAP) {
+                        float s = W_CAP / sumWSp[idx];
+                        sumWSp[idx] *= s; sumWVSp[idx] *= s;
+                    }
                 }
                 gridPixels[idx] = cellColor(idx);
             }
@@ -506,22 +556,47 @@ public class WifiHeatmapView extends android.view.View {
         for (int gy = 0; gy < GRID_N; gy++) {
             for (int gx = 0; gx < GRID_N; gx++) {
                 int idx = gy * GRID_N + gx;
-                if (sumW[idx] >= W_MIN || exterior[idx]) continue;   // covered or outside
-                float cxw = (gx + 0.5f) * CELL, cyw = (gy + 0.5f) * CELL;
-                double sw = 0, swv = 0;
-                for (ScanPoint p : points) {
-                    float dx = p.x - cxw, dy = p.y - cyw;
-                    double w = 1.0 / (dx*dx + dy*dy + 1.0);
-                    sw += w; swv += w * p.rssi;
+                if (sumW[idx] >= W_LOW || exterior[idx]) continue;   // solid or outside
+                // outer fringe (touches the exterior) is left to the soft edge fade
+                if ((gx > 0          && exterior[idx - 1])
+                 || (gx < GRID_N - 1 && exterior[idx + 1])
+                 || (gy > 0          && exterior[idx - GRID_N])
+                 || (gy < GRID_N - 1 && exterior[idx + GRID_N])) continue;
+
+                float est = interpolateAt((gx + 0.5f) * CELL, (gy + 0.5f) * CELL);
+                if (Float.isNaN(est)) continue;
+                float value = est;
+                if (sumW[idx] >= W_MIN) {
+                    // ghost-island fix: weakly-measured enclosed cell — blend
+                    // its faint measurement with the interpolation
+                    float t = sumW[idx] / W_LOW;
+                    float measured = (mapLayer == MapLayer.SPEED && sumWSp[idx] >= W_MIN)
+                            ? sumWVSp[idx] / sumWSp[idx]
+                            : (mapLayer == MapLayer.SIGNAL ? sumWV[idx] / sumW[idx] : est);
+                    value = measured * t + est * (1f - t);
                 }
-                gridPixels[idx] = setAlpha(heatColorForRssi((float)(swv / sw)),
-                        HEAT_ALPHA - 40);
+                int col = mapLayer == MapLayer.SPEED
+                        ? speedColorForMbps(value) : heatColorForRssi(value);
+                gridPixels[idx] = setAlpha(col, HEAT_ALPHA - 40);
                 filled++;
             }
         }
         if (filled > 0)
             heatBitmap.setPixels(gridPixels, 0, GRID_N, 0, 0, GRID_N, GRID_N);
         barrier = null;
+    }
+
+    /** IDW (1/d²) estimate of the active layer's value at a world position; NaN if no data. */
+    private float interpolateAt(float wx, float wy) {
+        double sw = 0, swv = 0;
+        for (ScanPoint p : points) {
+            float v = mapLayer == MapLayer.SPEED ? p.linkMbps : p.rssi;
+            if (mapLayer == MapLayer.SPEED && p.linkMbps <= 0) continue;
+            float dx = p.x - wx, dy = p.y - wy;
+            double w = 1.0 / (dx*dx + dy*dy + 1.0);
+            sw += w; swv += w * v;
+        }
+        return sw > 0 ? (float) (swv / sw) : Float.NaN;
     }
 
     private boolean[] barrier;   // valid only inside fillCoverageGaps
@@ -540,6 +615,8 @@ public class WifiHeatmapView extends android.view.View {
         contourDirty = false;
         contourPath.rewind();
         final float T = CONTOUR_RSSI;
+        // weak mask filtered by connected-component size: tiny islands are noise
+        boolean[] keep = buildFilteredWeakMask(T);
         for (int gy = 0; gy < GRID_N - 1; gy++) {
             int row = gy * GRID_N;
             for (int gx = 0; gx < GRID_N - 1; gx++) {
@@ -548,8 +625,8 @@ public class WifiHeatmapView extends android.view.View {
                         || sumW[i01] < W_MIN || sumW[i11] < W_MIN) continue;
                 float v00 = sumWV[i00]/sumW[i00], v10 = sumWV[i10]/sumW[i10];
                 float v01 = sumWV[i01]/sumW[i01], v11 = sumWV[i11]/sumW[i11];
-                int c = (v00 < T ? 1 : 0) | (v10 < T ? 2 : 0)
-                      | (v11 < T ? 4 : 0) | (v01 < T ? 8 : 0);
+                int c = (keep[i00] ? 1 : 0) | (keep[i10] ? 2 : 0)
+                      | (keep[i11] ? 4 : 0) | (keep[i01] ? 8 : 0);
                 if (c == 0 || c == 15) continue;
                 float x0 = (gx + 0.5f) * CELL, y0c = (gy + 0.5f) * CELL;
                 float x1 = x0 + CELL, y1c = y0c + CELL;
@@ -572,6 +649,33 @@ public class WifiHeatmapView extends android.view.View {
         }
     }
 
+    /** Weak (covered, below T) cells, with connected regions under MIN_CONTOUR_CELLS removed. */
+    private boolean[] buildFilteredWeakMask(float T) {
+        boolean[] weak = new boolean[GRID_N * GRID_N];
+        for (int idx = 0; idx < weak.length; idx++)
+            weak[idx] = sumW[idx] >= W_MIN && sumWV[idx] / sumW[idx] < T;
+        boolean[] visited = new boolean[weak.length];
+        java.util.ArrayDeque<Integer> stack = new java.util.ArrayDeque<>();
+        java.util.List<Integer> component = new ArrayList<>();
+        for (int start = 0; start < weak.length; start++) {
+            if (!weak[start] || visited[start]) continue;
+            component.clear();
+            visited[start] = true; stack.push(start);
+            while (!stack.isEmpty()) {
+                int idx = stack.pop();
+                component.add(idx);
+                int gx = idx % GRID_N, gy = idx / GRID_N;
+                if (gx > 0          && weak[idx-1]      && !visited[idx-1])      { visited[idx-1]=true;      stack.push(idx-1); }
+                if (gx < GRID_N-1   && weak[idx+1]      && !visited[idx+1])      { visited[idx+1]=true;      stack.push(idx+1); }
+                if (gy > 0          && weak[idx-GRID_N] && !visited[idx-GRID_N]) { visited[idx-GRID_N]=true; stack.push(idx-GRID_N); }
+                if (gy < GRID_N-1   && weak[idx+GRID_N] && !visited[idx+GRID_N]) { visited[idx+GRID_N]=true; stack.push(idx+GRID_N); }
+            }
+            if (component.size() < MIN_CONTOUR_CELLS)
+                for (int idx : component) weak[idx] = false;
+        }
+        return weak;
+    }
+
     private static float frac(float a, float b, float t) {
         return (Math.abs(b - a) < 1e-4f) ? 0.5f : Math.max(0f, Math.min(1f, (t - a) / (b - a)));
     }
@@ -592,10 +696,16 @@ public class WifiHeatmapView extends android.view.View {
 
     private int cellColor(int idx) {
         float w = sumW[idx];
-        if (w < W_MIN) return 0;
-        float rssi = sumWV[idx] / w;
-        int alpha = (int) (HEAT_ALPHA * Math.min(1f, w / W_FULL));
-        return setAlpha(heatColorForRssi(rssi), alpha);
+        if (w < W_VIS) return 0;
+        // soft outer edge: gentle power curve instead of a hard cutoff (no scallops)
+        int alpha = (int) (HEAT_ALPHA * Math.pow(Math.min(1f, w / W_FULL), 0.75));
+        if (mapLayer == MapLayer.SPEED) {
+            float ws = sumWSp[idx];
+            if (ws < W_MIN)   // covered, but no link-speed data here → neutral gray
+                return setAlpha(Color.rgb(120, 120, 132), Math.min(alpha, 90));
+            return setAlpha(speedColorForMbps(sumWVSp[idx] / ws), alpha);
+        }
+        return setAlpha(heatColorForRssi(sumWV[idx] / w), alpha);
     }
 
     private void drawHeatField(Canvas canvas) {
@@ -709,45 +819,80 @@ public class WifiHeatmapView extends android.view.View {
         float tw = lbl.measureText(label);
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
         bg.setColor(Color.argb(230, 40, 26, 6));
-        float ly = sy + r + 5*dp;
-        canvas.drawRoundRect(new RectF(sx-tw/2-8*dp, ly, sx+tw/2+8*dp, ly+20*dp), 5*dp, 5*dp, bg);
+        float lx = clampChipX(canvas, sx, tw/2 + 8*dp);
+        float ly = clampChipY(canvas, sy + r + 5*dp, 20*dp);
+        canvas.drawRoundRect(new RectF(lx-tw/2-8*dp, ly, lx+tw/2+8*dp, ly+20*dp), 5*dp, 5*dp, bg);
         lbl.setColor(Color.argb(245, 255, 200, 120));
-        canvas.drawText(label, sx, ly + 14.5f*dp, lbl);
+        canvas.drawText(label, lx, ly + 14.5f*dp, lbl);
+
+        // approximate size of the weak area, next to the hole it describes
+        if (!Float.isNaN(weakX) && weakAreaM2 >= 1.5f) {
+            String area = "~" + Math.round(weakAreaM2) + " m² weak";
+            Paint at = new Paint(Paint.ANTI_ALIAS_FLAG);
+            at.setTextSize(11f * dp); at.setTextAlign(Paint.Align.CENTER);
+            at.setTypeface(Typeface.DEFAULT_BOLD);
+            float atw = at.measureText(area);
+            float ax = clampChipX(canvas, toSX(weakX), atw/2 + 7*dp);
+            float ay = clampChipY(canvas, toSY(weakY) + 22*dp, 18*dp);
+            Paint abg = new Paint(Paint.ANTI_ALIAS_FLAG);
+            abg.setColor(Color.argb(215, 50, 12, 12));
+            canvas.drawRoundRect(new RectF(ax-atw/2-7*dp, ay, ax+atw/2+7*dp, ay+18*dp), 5*dp, 5*dp, abg);
+            at.setColor(Color.argb(245, 255, 150, 150));
+            canvas.drawText(area, ax, ay + 13f*dp, at);
+        }
     }
 
-    /** Stage A overlay — purple hatched circles where signal is good but performance poor. */
+    /** True when so many points are flagged that hatching would hide the map. */
+    public boolean isInterferenceWidespread() {
+        if (points.isEmpty()) return false;
+        int n = 0;
+        for (ScanPoint p : points) if (p.interference) n++;
+        return n * 100 > points.size() * 40;
+    }
+
+    /**
+     * Stage A overlay — one unified purple hatched region (no overlap darkening).
+     * When >40% of the scan is flagged the problem is global, not local — skip
+     * the hatch entirely (a report banner covers it instead).
+     */
     private void drawInterference(Canvas canvas) {
+        if (isInterferenceWidespread()) return;
         float cx = 0, cy = 0; int n = 0;
         float topY = Float.MAX_VALUE;
         float r = Math.max(16f * dp, HEAT_RADIUS * 0.55f * zoom);
-        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
-        fill.setColor(Color.argb(52, 186, 104, 200));
-        Paint stripe = new Paint(Paint.ANTI_ALIAS_FLAG);
-        stripe.setColor(Color.argb(115, 186, 104, 200));
-        stripe.setStrokeWidth(2f * dp);
-        Path clip = new Path();
+        Path region = new Path();
         for (ScanPoint p : points) {
             if (!p.interference) continue;
             float sx = toSX(p.x), sy = toSY(p.y);
             cx += sx; cy += sy; n++;
             topY = Math.min(topY, sy);
-            canvas.drawCircle(sx, sy, r, fill);
-            clip.rewind();
-            clip.addCircle(sx, sy, r, Path.Direction.CW);
-            canvas.save();
-            canvas.clipPath(clip);
-            for (float d = -2*r; d <= 2*r; d += 9f * dp)
-                canvas.drawLine(sx + d - r, sy + r, sx + d + r, sy - r, stripe);
-            canvas.restore();
+            region.addCircle(sx, sy, r, Path.Direction.CW);
         }
+        if (n == 0) return;
+        // union fill: one path = one alpha, however much the circles overlap
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fill.setColor(Color.argb(48, 186, 104, 200));
+        canvas.drawPath(region, fill);
+        Paint stripe = new Paint(Paint.ANTI_ALIAS_FLAG);
+        stripe.setColor(Color.argb(110, 186, 104, 200));
+        stripe.setStrokeWidth(2f * dp);
+        RectF b = new RectF();
+        region.computeBounds(b, true);
+        canvas.save();
+        canvas.clipPath(region);
+        for (float x = b.left - b.height(); x <= b.right; x += 10f * dp)
+            canvas.drawLine(x, b.bottom, x + b.height(), b.top, stripe);
+        canvas.restore();
+
         if (n >= 3) {
             String label = "⚠ Interference suspected";
             Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
             lbl.setTextSize(13f * dp); lbl.setTextAlign(Paint.Align.CENTER);
             lbl.setTypeface(Typeface.DEFAULT_BOLD);
-            // chip sits ABOVE the whole marked area, never on the graph itself
-            float tw = lbl.measureText(label), lx = cx/n;
-            float ly = Math.max(6*dp, topY - r - 28*dp);
+            // chip sits ABOVE the whole marked area, clamped inside the canvas
+            float tw = lbl.measureText(label);
+            float lx = clampChipX(canvas, cx / n, tw/2 + 9*dp);
+            float ly = clampChipY(canvas, topY - r - 28*dp, 22*dp);
             RectF chip = new RectF(lx-tw/2-9*dp, ly, lx+tw/2+9*dp, ly+22*dp);
             Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
             bg.setColor(Color.argb(235, 45, 20, 50));
@@ -759,6 +904,14 @@ public class WifiHeatmapView extends android.view.View {
             lbl.setColor(Color.argb(250, 230, 180, 255));
             canvas.drawText(label, lx, ly + 16*dp, lbl);
         }
+    }
+
+    // Keep floating chips fully inside the canvas (labels were clipped at edges)
+    private float clampChipX(Canvas c, float x, float halfWidth) {
+        return Math.max(halfWidth + 4*dp, Math.min(c.getWidth() - halfWidth - 4*dp, x));
+    }
+    private float clampChipY(Canvas c, float y, float height) {
+        return Math.max(4*dp, Math.min(c.getHeight() - height - 4*dp, y));
     }
 
     /** Stage D badges — orange "!" on points where signal fell far below the model. */
@@ -870,6 +1023,7 @@ public class WifiHeatmapView extends android.view.View {
             if (mapMode == MapMode.FREE_SCROLL) drawMiniMap(canvas);
             drawSignalLegend(canvas, 12f*dp, getHeight() - 30f*dp, 130f*dp);
             drawScaleBar(canvas, getWidth() - 16f*dp, getHeight() - 16f*dp);
+            drawLayerChip(canvas);
         }
     }
 
@@ -934,12 +1088,14 @@ public class WifiHeatmapView extends android.view.View {
         Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
         lbl.setTextSize(11f * dp); lbl.setTextAlign(Paint.Align.CENTER);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
-        float tw = lbl.measureText(label), ly = sy + 18f * dp;
+        float tw = lbl.measureText(label);
+        float lx = clampChipX(canvas, sx, tw/2 + 6*dp);
+        float ly = clampChipY(canvas, sy + 18f * dp, 17*dp);
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
         bg.setColor(Color.argb(220, 8, 25, 50));
-        canvas.drawRoundRect(new RectF(sx-tw/2-6*dp, ly, sx+tw/2+6*dp, ly+17*dp), 5*dp, 5*dp, bg);
+        canvas.drawRoundRect(new RectF(lx-tw/2-6*dp, ly, lx+tw/2+6*dp, ly+17*dp), 5*dp, 5*dp, bg);
         lbl.setColor(Color.argb(240, 160, 205, 255));
-        canvas.drawText(label, sx, ly + 12.5f * dp, lbl);
+        canvas.drawText(label, lx, ly + 12.5f * dp, lbl);
     }
 
     /** Google-Maps-style position puck: heading cone + blue dot with white ring. */
@@ -968,22 +1124,25 @@ public class WifiHeatmapView extends android.view.View {
         canvas.drawCircle(sx, sy, 6.5f * dp, dot);
     }
 
-    /** Gradient legend bar: -90 dBm (red) → -45 dBm (green). */
+    /** Gradient legend bar — dBm scale or Mbps scale, matching the active layer. */
     private void drawSignalLegend(Canvas canvas, float x, float y, float w) {
         if (points.isEmpty()) return;
         float h = 8f * dp;
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bg.setColor(Color.argb(170, 10, 15, 25));
+        bg.setColor(Color.argb(190, 10, 15, 25));
         canvas.drawRoundRect(new RectF(x-6*dp, y-16*dp, x+w+6*dp, y+h+6*dp), 6*dp, 6*dp, bg);
 
-        // gradient built from the heat stops, weak (left) → strong (right)
-        int n = HEAT_STOPS.length;
+        boolean speed = mapLayer == MapLayer.SPEED;
+        float[] stops = speed ? SPEED_STOPS : HEAT_STOPS;
+        int[] colors  = speed ? SPEED_COLORS : HEAT_COLORS;
+        // gradient built from the stops, weak (left) → strong (right)
+        int n = stops.length;
         int[] cols = new int[n];
         float[] pos = new float[n];
-        float lo = HEAT_STOPS[n-1], hi = HEAT_STOPS[0];
+        float lo = stops[n-1], hi = stops[0];
         for (int i = 0; i < n; i++) {
-            cols[i] = HEAT_COLORS[n-1-i];
-            pos[i]  = (HEAT_STOPS[n-1-i] - lo) / (hi - lo);
+            cols[i] = colors[n-1-i];
+            pos[i]  = (stops[n-1-i] - lo) / (hi - lo);
         }
         Paint bar = new Paint(Paint.ANTI_ALIAS_FLAG);
         bar.setShader(new LinearGradient(x, 0, x+w, 0, cols, pos, Shader.TileMode.CLAMP));
@@ -992,9 +1151,29 @@ public class WifiHeatmapView extends android.view.View {
         Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
         txt.setColor(Color.argb(220, 255, 255, 255));
         txt.setTextSize(10f * dp);
-        canvas.drawText((int) lo + " dBm", x, y - 4*dp, txt);
+        canvas.drawText(speed ? "≤" + (int) lo + " Mbps" : (int) lo + " dBm", x, y - 4*dp, txt);
         txt.setTextAlign(Paint.Align.RIGHT);
-        canvas.drawText((int) hi + " dBm", x + w, y - 4*dp, txt);
+        canvas.drawText(speed ? (int) hi + "+ Mbps" : (int) hi + " dBm", x + w, y - 4*dp, txt);
+    }
+
+    /** Small "dBm ⇄ Mbps" toggle chip, top-left of the map (screen only, not export). */
+    private void drawLayerChip(Canvas canvas) {
+        if (points.isEmpty()) { layerChipRect.setEmpty(); return; }
+        String text = mapLayer == MapLayer.SIGNAL ? "dBm ⇄" : "Mbps ⇄";
+        Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
+        lbl.setTextSize(12f * dp); lbl.setTextAlign(Paint.Align.CENTER);
+        lbl.setTypeface(Typeface.DEFAULT_BOLD);
+        float tw = lbl.measureText(text);
+        layerChipRect.set(10*dp, 10*dp, 10*dp + tw + 20*dp, 10*dp + 26*dp);
+        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bg.setColor(Color.argb(210, 15, 22, 36));
+        canvas.drawRoundRect(layerChipRect, 13*dp, 13*dp, bg);
+        Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+        edge.setStyle(Paint.Style.STROKE); edge.setStrokeWidth(1.3f * dp);
+        edge.setColor(Color.argb(180, 88, 166, 255));
+        canvas.drawRoundRect(layerChipRect, 13*dp, 13*dp, edge);
+        lbl.setColor(Color.argb(240, 150, 200, 255));
+        canvas.drawText(text, layerChipRect.centerX(), layerChipRect.centerY() + 4.3f*dp, lbl);
     }
 
     /** Metric scale bar (right-bottom), rounded to 1/2/5/10/20 m for the current zoom. */
@@ -1069,14 +1248,74 @@ public class WifiHeatmapView extends android.view.View {
         return false;
     }
 
+    /** Tap on any sample dot → same detail popup the roam markers get. */
+    private boolean handlePointTap(float tx, float ty) {
+        int best = -1; double bd = 18 * dp;
+        for (int i = 0; i < points.size(); i++) {
+            ScanPoint p = points.get(i);
+            double d = Math.hypot(tx - toSX(p.x), ty - toSY(p.y));
+            if (d < bd) { bd = d; best = i; }
+        }
+        if (best < 0) return false;
+        ScanPoint p = points.get(best);
+        String band = p.freqMhz >= 4900 ? "5 GHz" : p.freqMhz > 0 ? "2.4 GHz" : "?";
+        java.text.SimpleDateFormat sdf =
+                new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault());
+        StringBuilder msg = new StringBuilder();
+        msg.append("Time:     ").append(sdf.format(new java.util.Date(p.timestamp))).append("\n")
+           .append("Signal:   ").append(p.rssi).append(" dBm (").append(band).append(")\n")
+           .append("Quality:  ").append(p.getQualityLabel()).append("\n");
+        if (p.linkMbps > 0) msg.append("Link:      ").append(p.linkMbps).append(" Mbps\n");
+        if (p.rttMs   > 0) msg.append("Latency:  ").append(p.rttMs).append(" ms\n");
+        msg.append("Served by: AP ").append(apIndexForPoint(best) + 1);
+        if (p.interference) msg.append("\n\n⚠ Interference suspected at this spot");
+        new android.app.AlertDialog.Builder(getContext())
+                .setTitle("Point #" + (best + 1))
+                .setMessage(msg.toString())
+                .setPositiveButton("OK", null)
+                .show();
+        return true;
+    }
+
+    /** Tap on a colored area without a dot → honest "estimated" popup. */
+    private boolean handleAreaTap(float tx, float ty) {
+        float wx = toWX(tx), wy = toWY(ty);
+        int gx = (int) (wx / CELL), gy = (int) (wy / CELL);
+        if (gx < 0 || gx >= GRID_N || gy < 0 || gy >= GRID_N) return false;
+        int idx = gy * GRID_N + gx;
+        if (gridPixels[idx] == 0) return false;   // tapped the dark background
+        boolean measured = sumW[idx] >= W_MIN;
+        String msg;
+        if (mapLayer == MapLayer.SPEED) {
+            float v = measured && sumWSp[idx] >= W_MIN
+                    ? sumWVSp[idx] / sumWSp[idx] : interpolateAt(wx, wy);
+            if (Float.isNaN(v)) return false;
+            msg = (measured ? "Average here:  " : "Estimated (interpolated):  ")
+                    + Math.round(v) + " Mbps";
+        } else {
+            float v = measured ? sumWV[idx] / sumW[idx] : interpolateAt(wx, wy);
+            if (Float.isNaN(v)) return false;
+            msg = (measured ? "Average here:  " : "Estimated (interpolated):  ")
+                    + Math.round(v) + " dBm";
+        }
+        new android.app.AlertDialog.Builder(getContext())
+                .setTitle(measured ? "Measured area" : "Interpolated area")
+                .setMessage(msg + (measured ? "" : "\n\nNo direct measurement here — value is estimated from nearby samples."))
+                .setPositiveButton("OK", null)
+                .show();
+        return true;
+    }
+
     /** "⇄ …tag" chip under a roam marker — identifies which AP took over. */
     private void drawRoamLabel(Canvas canvas, float sx, float sy, String label) {
         String text = "⇄ " + label;
         Paint lbl = new Paint(Paint.ANTI_ALIAS_FLAG);
         lbl.setTextSize(13f * dp); lbl.setTextAlign(Paint.Align.CENTER);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
-        float tw = lbl.measureText(text), ly = sy + 34 * dp;
-        RectF chip = new RectF(sx-tw/2-8*dp, ly, sx+tw/2+8*dp, ly+22*dp);
+        float tw = lbl.measureText(text);
+        float cxq = clampChipX(canvas, sx, tw/2 + 8*dp);
+        float ly = clampChipY(canvas, sy + 34 * dp, 22*dp);
+        RectF chip = new RectF(cxq-tw/2-8*dp, ly, cxq+tw/2+8*dp, ly+22*dp);
         Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
         bg.setColor(Color.argb(235, 40, 30, 8));
         canvas.drawRoundRect(chip, 6*dp, 6*dp, bg);
@@ -1085,7 +1324,7 @@ public class WifiHeatmapView extends android.view.View {
         edge.setColor(Color.argb(200, 255, 200, 80));
         canvas.drawRoundRect(chip, 6*dp, 6*dp, edge);
         lbl.setColor(Color.argb(252, 255, 220, 130));
-        canvas.drawText(text, sx, ly + 16 * dp, lbl);
+        canvas.drawText(text, cxq, ly + 16 * dp, lbl);
     }
 
     private void drawFlashRing(Canvas canvas, float sx, float sy) {
@@ -1297,6 +1536,42 @@ public class WifiHeatmapView extends android.view.View {
             Color.rgb(255, 61, 0),     // bad
             Color.rgb(183, 28, 28)     // very bad
     };
+
+    // Speed layer scale: deep green (fast) → dark red (slow), continuous
+    private static final float[] SPEED_STOPS = { 150f, 100f, 60f, 30f, 10f };
+    private static final int[]   SPEED_COLORS = {
+            Color.rgb(0, 200, 83),     // 150+ Mbps
+            Color.rgb(120, 220, 40),   // ~100
+            Color.rgb(255, 214, 0),    // ~60
+            Color.rgb(255, 145, 0),    // ~30
+            Color.rgb(198, 40, 40)     // ≤10
+    };
+
+    private int speedColorForMbps(float mbps) {
+        if (mbps >= SPEED_STOPS[0]) return SPEED_COLORS[0];
+        int last = SPEED_STOPS.length - 1;
+        if (mbps <= SPEED_STOPS[last]) return SPEED_COLORS[last];
+        for (int i = 1; i <= last; i++) {
+            if (mbps > SPEED_STOPS[i]) {
+                float t = (SPEED_STOPS[i-1] - mbps) / (SPEED_STOPS[i-1] - SPEED_STOPS[i]);
+                return blendColors(SPEED_COLORS[i-1], SPEED_COLORS[i], t);
+            }
+        }
+        return SPEED_COLORS[last];
+    }
+
+    public MapLayer getMapLayer() { return mapLayer; }
+
+    /** Switch the coloring layer (dBm ↔ Mbps) and repaint the whole field. */
+    public void setMapLayer(MapLayer layer) {
+        if (layer == mapLayer) return;
+        mapLayer = layer;
+        for (int idx = 0; idx < gridPixels.length; idx++)
+            gridPixels[idx] = sumW[idx] >= W_VIS ? cellColor(idx) : 0;
+        heatBitmap.setPixels(gridPixels, 0, GRID_N, 0, 0, GRID_N, GRID_N);
+        if (!scanning && !points.isEmpty()) fillCoverageGaps();
+        invalidate();
+    }
 
     /** Smooth interpolated color for the heat field — no visible banding. */
     private int heatColorForRssi(float rssi) {

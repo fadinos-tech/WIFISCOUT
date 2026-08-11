@@ -574,11 +574,26 @@ public class MainActivity extends AppCompatActivity {
     private void runEndOfScanDiagnostics() {
         StringBuilder diag = new StringBuilder();
 
+        // Approximate areas (from walked coverage, not the real floor plan)
+        float covered = heatmapView.getCoveredAreaM2(), weakArea = heatmapView.getWeakAreaM2();
+        if (covered >= 3f) {
+            int pct = Math.round(weakArea * 100f / covered);
+            diag.append("Scanned area: ~").append(Math.round(covered))
+                .append(" m², weak: ~").append(Math.round(weakArea))
+                .append(" m² (").append(pct).append("% of scanned area)\n")
+                .append("(estimated from walked coverage)\n");
+        }
+
         // Interference zones (stage A summary)
         int interferencePts = 0;
         List<ScanPoint> pts = heatmapView.getPoints();
         for (ScanPoint p : pts) if (p.interference) interferencePts++;
-        if (interferencePts >= 3) {
+        if (heatmapView.isInterferenceWidespread()) {
+            diag.append("Poor performance across MOST of the scan (")
+                .append(interferencePts).append("/").append(pts.size())
+                .append(" points) — likely overall network congestion or a busy channel, ")
+                .append("not a local noise source.\n");
+        } else if (interferencePts >= 3) {
             diag.append("Interference SUSPECTED at ").append(interferencePts)
                 .append(" points: good signal but poor link speed/latency.\n")
                 .append("Possible causes: noise source (speaker/microwave/BT), channel congestion.\n");
@@ -629,7 +644,9 @@ public class MainActivity extends AppCompatActivity {
         }
 
         diagnostics = diag.toString();
-        if (interferencePts >= 3)
+        if (heatmapView.isInterferenceWidespread())
+            Toast.makeText(this, "Poor performance across most of the scan — see report", Toast.LENGTH_LONG).show();
+        else if (interferencePts >= 3)
             Toast.makeText(this, "Interference suspected — see purple zones", Toast.LENGTH_LONG).show();
     }
 
