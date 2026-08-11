@@ -276,7 +276,7 @@ public class MainActivity extends AppCompatActivity {
                 new AlertDialog.Builder(this)
                         .setTitle("License")
                         .setMessage("WiFi Scout v" + BuildConfig.VERSION_NAME
-                                + "\nClick Solutions Pro\n\n✓ PRO license active.")
+                                + "\nClick Solutions Pro\n\n✓ License ACTIVATED.")
                         .setPositiveButton("OK", null).show();
             } else {
                 showTrialEndedDialogFromMenu();
@@ -352,7 +352,7 @@ public class MainActivity extends AppCompatActivity {
     private void updateTrialLabel() {
         if (tvTrial == null) return;
         if (licenseManager.isLicensed()) {
-            tvTrial.setText("PRO");
+            tvTrial.setText("ACTIVATED");
             tvTrial.setTextColor(0xFF00E676);
             tvTrial.setVisibility(View.VISIBLE);
         } else {
