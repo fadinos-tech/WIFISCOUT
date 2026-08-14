@@ -14,6 +14,7 @@ import com.android.billingclient.api.ProductDetails;
 import com.android.billingclient.api.Purchase;
 import com.android.billingclient.api.PurchasesUpdatedListener;
 import com.android.billingclient.api.QueryProductDetailsParams;
+import com.android.billingclient.api.QueryProductDetailsResult;
 
 import java.util.Collections;
 import java.util.List;
@@ -62,7 +63,8 @@ public class BillingManager implements PurchasesUpdatedListener {
                                 .setProductType(BillingClient.ProductType.INAPP)
                                 .build()))
                 .build();
-        client.queryProductDetailsAsync(params, (r, list) -> {
+        client.queryProductDetailsAsync(params, (r, result) -> {
+            List<ProductDetails> list = result.getProductDetailsList();
             if (r.getResponseCode() == BillingClient.BillingResponseCode.OK && !list.isEmpty())
                 product = list.get(0);
         });

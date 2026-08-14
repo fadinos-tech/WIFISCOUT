@@ -62,5 +62,6 @@ dependencies {
     implementation 'com.google.firebase:firebase-auth'
 
     // Google Play Billing — in-app license purchase
-    implementation 'com.android.billingclient:billing:7.1.1'
+    // Google requires 8.0.0+ from 31 Aug 2026 (extension until 1 Nov 2026)
+    implementation 'com.android.billingclient:billing:9.1.0'
 }
