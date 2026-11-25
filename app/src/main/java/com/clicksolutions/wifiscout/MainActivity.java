@@ -29,11 +29,16 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
 
 import java.io.File;
@@ -138,6 +143,8 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         loadPrefs();
         initViews();
+        setupEdgeToEdge();
+        setupBackHandling();
         licenseManager = new LicenseManager(this);
         licenseManager.setListener(() -> runOnUiThread(this::updateTrialLabel));
         updateTrialLabel();
@@ -196,13 +203,52 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    @Override public void onBackPressed() {
-        if (drawerLayout.isOpen()) { drawerLayout.close(); return; }
-        new AlertDialog.Builder(this)
-                .setTitle("Exit WiFi Scout")
-                .setMessage("Are you sure you want to exit?")
-                .setPositiveButton("Exit", (d, w) -> finish())
-                .setNegativeButton("Cancel", null).show();
+    /**
+     * Targeting Android 16 (API 36): the legacy onBackPressed() override is no
+     * longer called, so Back goes through the OnBackPressedDispatcher instead.
+     * Behavior is unchanged: close the drawer first, otherwise confirm exit.
+     */
+    private void setupBackHandling() {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override public void handleOnBackPressed() {
+                if (drawerLayout.isOpen()) { drawerLayout.close(); return; }
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Exit WiFi Scout")
+                        .setMessage("Are you sure you want to exit?")
+                        .setPositiveButton("Exit", (d, w) -> finish())
+                        .setNegativeButton("Cancel", null).show();
+            }
+        });
+    }
+
+    /**
+     * Targeting API 36 forces edge-to-edge: the window draws behind the status
+     * and navigation bars (the old opt-out is ignored). The header, footer and
+     * drawer therefore pad themselves by the system-bar insets, keeping their
+     * dark backgrounds so the bars look seamless.
+     */
+    private void setupEdgeToEdge() {
+        WindowInsetsControllerCompat wic =
+                new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+        wic.setAppearanceLightStatusBars(false);       // light icons on our dark UI
+        wic.setAppearanceLightNavigationBars(false);
+
+        padWithInsets(findViewById(R.id.header), true, false);
+        padWithInsets(findViewById(R.id.footer), false, true);
+        padWithInsets(findViewById(R.id.drawer), true, true);
+    }
+
+    private void padWithInsets(View v, boolean top, boolean bottom) {
+        final int l = v.getPaddingLeft(), t = v.getPaddingTop(),
+                  r = v.getPaddingRight(), b = v.getPaddingBottom();
+        ViewCompat.setOnApplyWindowInsetsListener(v, (view, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()
+                    | WindowInsetsCompat.Type.displayCutout());
+            view.setPadding(l + bars.left, t + (top ? bars.top : 0),
+                    r + bars.right, b + (bottom ? bars.bottom : 0));
+            return insets;   // not consumed — siblings still receive them
+        });
+        ViewCompat.requestApplyInsets(v);
     }
 
     // ── Prefs ────────────────────────────────────────────────────

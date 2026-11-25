@@ -12,12 +12,12 @@ if (keystorePropsFile.exists()) {
 
 android {
     namespace 'com.clicksolutions.wifiscout'
-    compileSdk 35
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.clicksolutions.wifiscout"
         minSdk 26
-        targetSdk 35
+        targetSdk 36   // Google Play requires API 36 (Android 16) for updates
         // Version is defined once in gradle.properties (APP_VERSION_NAME / APP_VERSION_CODE)
         versionCode APP_VERSION_CODE.toInteger()
         versionName APP_VERSION_NAME
@@ -35,7 +35,9 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
+            // R8 shrink + obfuscate (Play Android vitals flags <25% obfuscation)
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             if (keystorePropsFile.exists()) signingConfig signingConfigs.release
         }
